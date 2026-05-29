@@ -33,6 +33,10 @@ class AdditionDataset(Dataset):
         self.num_digits = num_digits
         self.tokenizer = tokenizer or CharTokenizer()
         
+        # Comprimento máximo da entrada e do alvo para fins de padding
+        self.max_input_len = num_digits * 2 + 2 # ex: "99+99=" -> 6 chars
+        self.max_target_len = num_digits + 1    # ex: "198" -> 3 chars
+        
         if samples is not None:
             self.samples = samples
             self.num_samples = len(samples)
@@ -64,9 +68,7 @@ class AdditionDataset(Dataset):
                 
                 self.samples.append((input_str, target_str))
 
-        # Comprimento máximo da entrada e do alvo para fins de padding
-        self.max_input_len = num_digits * 2 + 2 # ex: "999+999=" -> 8 chars
-        self.max_target_len = num_digits + 1    # ex: "1998" -> 4 chars
+        # Inicialização do comprimento máximo do padding concluída
 
     def __len__(self):
         return len(self.samples)
