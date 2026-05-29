@@ -204,7 +204,8 @@ def main():
         nhead=4,
         num_encoder_layers=1,
         num_decoder_layers=1,
-        max_ponder_steps=0 # Desativa ponderação latente
+        max_ponder_steps=0, # Desativa ponderação latente
+        use_pos_embedding=True
     )
     
     # 3. Configurar Modelo Think-Vetor (Com Ponderação Latente e Langevin)
@@ -216,7 +217,8 @@ def main():
         num_decoder_layers=1,
         max_ponder_steps=6, # 6 passos de reflexão no máximo
         num_memories=128,
-        beta=8.0
+        beta=8.0,
+        use_pos_embedding=True
     )
     
     # 4. Treinar ambos os modelos

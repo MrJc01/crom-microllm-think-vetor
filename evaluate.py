@@ -83,21 +83,21 @@ def run_evaluation():
     
     baseline = ThinkVetorModel(
         vocab_size=tokenizer.vocab_size,
-        d_model=64,
-        nhead=4,
-        num_encoder_layers=1,
-        num_decoder_layers=1,
+        d_model=128,
+        nhead=8,
+        num_encoder_layers=2,
+        num_decoder_layers=2,
         max_ponder_steps=0
     ).to(device)
     
     think_vetor = ThinkVetorModel(
         vocab_size=tokenizer.vocab_size,
-        d_model=64,
-        nhead=4,
-        num_encoder_layers=1,
-        num_decoder_layers=1,
+        d_model=128,
+        nhead=8,
+        num_encoder_layers=2,
+        num_decoder_layers=2,
         max_ponder_steps=6,
-        num_memories=128,
+        num_memories=512,
         beta=8.0
     ).to(device)
     
@@ -106,14 +106,20 @@ def run_evaluation():
     think_vetor_path = "checkpoints/think_vetor_best.pt"
     
     if os.path.exists(baseline_path):
-        baseline.load_state_dict(torch.load(baseline_path, map_location=device))
-        print("-> Pesos do Baseline carregados com sucesso.")
+        try:
+            baseline.load_state_dict(torch.load(baseline_path, map_location=device))
+            print("-> Pesos do Baseline carregados com sucesso.")
+        except Exception as e:
+            print(f"-> AVISO: Não foi possível carregar os pesos do Baseline ({e}). Usando inicialização aleatória.")
     else:
         print("-> AVISO: Pesos do Baseline não encontrados. Usando inicialização aleatória.")
         
     if os.path.exists(think_vetor_path):
-        think_vetor.load_state_dict(torch.load(think_vetor_path, map_location=device))
-        print("-> Pesos do Think-Vetor carregados com sucesso.")
+        try:
+            think_vetor.load_state_dict(torch.load(think_vetor_path, map_location=device))
+            print("-> Pesos do Think-Vetor carregados com sucesso.")
+        except Exception as e:
+            print(f"-> AVISO: Não foi possível carregar os pesos do Think-Vetor ({e}). Usando inicialização aleatória.")
     else:
         print("-> AVISO: Pesos do Think-Vetor não encontrados. Usando inicialização aleatória.")
         
