@@ -164,12 +164,35 @@ def main():
     print(f"Usando dispositivo: {device}")
     
     # 1. Preparar Tokenizador e Datasets
-    # Usaremos 2 dígitos para manter o treinamento rápido no protótipo (~100 amostras possíveis no máximo, mas criamos 1000 exemplos para treino rápido)
+    # Usaremos 2 dígitos para manter o treinamento rápido no protótipo
     num_digits = 2
     tokenizer = CharTokenizer()
     
-    train_ds = AdditionDataset(num_digits=num_digits, num_samples=1000, seed=42, tokenizer=tokenizer)
-    val_ds = AdditionDataset(num_digits=num_digits, num_samples=200, seed=99, tokenizer=tokenizer)
+    # Gerar todas as combinações únicas de 2 dígitos (10.000 pares no total)
+    import random
+    random.seed(42)
+    max_val = 10**num_digits - 1
+    all_pairs = []
+    for a in range(max_val + 1):
+        for b in range(max_val + 1):
+            all_pairs.append((a, b))
+    random.shuffle(all_pairs)
+    
+    # Divisão de 1.000 para treino e 200 para validação disjuntos
+    train_pairs = all_pairs[:1000]
+    val_pairs = all_pairs[1000:1200]
+    
+    def pairs_to_samples(pairs):
+        return [f"{a}+{b}=" for a, b in pairs], [f"{a+b}" for a, b in pairs]
+        
+    train_inputs, train_targets = pairs_to_samples(train_pairs)
+    val_inputs, val_targets = pairs_to_samples(val_pairs)
+    
+    train_samples = list(zip(train_inputs, train_targets))
+    val_samples = list(zip(val_inputs, val_targets))
+    
+    train_ds = AdditionDataset(num_digits=num_digits, tokenizer=tokenizer, samples=train_samples)
+    val_ds = AdditionDataset(num_digits=num_digits, tokenizer=tokenizer, samples=val_samples)
     
     train_loader = DataLoader(train_ds, batch_size=64, shuffle=True)
     val_loader = DataLoader(val_ds, batch_size=128, shuffle=False)

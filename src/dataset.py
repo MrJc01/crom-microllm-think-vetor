@@ -28,17 +28,27 @@ class AdditionDataset(Dataset):
     Gera strings no formato 'A+B=' como entrada e 'C' como resposta,
     onde C = A + B.
     """
-    def __init__(self, num_digits=3, num_samples=10000, seed=42, tokenizer=None):
+    def __init__(self, num_digits=3, num_samples=10000, seed=42, tokenizer=None, samples=None):
         super().__init__()
         self.num_digits = num_digits
-        self.num_samples = num_samples
         self.tokenizer = tokenizer or CharTokenizer()
         
+        if samples is not None:
+            self.samples = samples
+            self.num_samples = len(samples)
+            return
+            
         random.seed(seed)
         self.samples = []
         
         # Determinar limite superior dos números baseado em num_digits
         max_val = 10**num_digits - 1
+        
+        # Evitar loop infinito se num_samples for maior do que o espaço total de combinações únicas
+        max_possible = (10**num_digits) ** 2
+        if num_samples > max_possible:
+            num_samples = max_possible
+        self.num_samples = num_samples
         
         # Gerar amostras únicas
         seen = set()
