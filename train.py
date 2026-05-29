@@ -1,0 +1,205 @@
+import os
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import DataLoader
+
+from src.dataset import CharTokenizer, AdditionDataset
+from src.model import ThinkVetorModel
+
+def compute_ponder_loss(halting_probs, prior_prob=0.3):
+    """
+    Calcula a perda de ponderação baseada na KL-Divergência
+    entre a distribuição de parada prevista (p) e uma distribuição geométrica prior (q).
+    halting_probs: Lista de tensores de tamanho max_ponder_steps, cada um de formato (B, S, 1)
+    """
+    if len(halting_probs) == 0:
+        return torch.tensor(0.0, device=halting_probs[0].device if len(halting_probs) > 0 else "cpu")
+        
+    # Stack: (B, S, max_ponder_steps)
+    p = torch.cat(halting_probs, dim=-1)
+    
+    batch_size, seq_len, max_steps = p.shape
+    device = p.device
+    
+    # Criar distribuição geométrica alvo q
+    q = torch.zeros(max_steps, device=device)
+    current_prob = prior_prob
+    for k in range(max_steps - 1):
+        q[k] = current_prob
+        current_prob *= (1.0 - prior_prob)
+    q[-1] = 1.0 - q[:-1].sum()
+    
+    # Expandir q para bater com as dimensões de p
+    q = q.view(1, 1, -1).expand(batch_size, seq_len, -1)
+    
+    # KL-Divergence: P * log(P / Q)
+    eps = 1e-8
+    kl = p * torch.log((p + eps) / (q + eps))
+    return kl.sum(dim=-1).mean()
+
+def train_model(model_name, model, dataloader, val_dataloader, tokenizer, epochs=15, device="cpu", use_ponder=True):
+    print(f"\n=== Iniciando Treinamento: {model_name} ===")
+    model = model.to(device)
+    optimizer = optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-4)
+    criterion = nn.CrossEntropyLoss(reduction="none") # Usamos none para aplicar a máscara do padding
+    
+    best_acc = 0.0
+    
+    for epoch in range(epochs):
+        model.train()
+        total_loss = 0.0
+        total_ce_loss = 0.0
+        total_p_loss = 0.0
+        
+        for batch in dataloader:
+            input_ids = batch["input_ids"].to(device)
+            target_ids = batch["target_ids"].to(device)
+            target_mask = batch["target_mask"].to(device)
+            
+            optimizer.zero_grad()
+            
+            # Forward pass
+            logits, halts = model(input_ids, target_ids)
+            
+            # 1. Perda de Cross-Entropy (somente nos tokens que não são padding)
+            # logits: (B, target_seq_len, vocab_size)
+            # target_ids: (B, target_seq_len)
+            B, T, V = logits.shape
+            logits_flat = logits.view(-1, V)
+            targets_flat = target_ids.view(-1)
+            mask_flat = target_mask.view(-1)
+            
+            ce_loss_raw = criterion(logits_flat, targets_flat)
+            ce_loss = (ce_loss_raw * mask_flat).sum() / (mask_flat.sum() + 1e-8)
+            
+            # 2. Perda de PonderNet
+            if use_ponder and len(halts) > 0:
+                p_loss = compute_ponder_loss(halts, prior_prob=0.3)
+            else:
+                p_loss = torch.tensor(0.0, device=device)
+                
+            # Perda Híbrida Combinada
+            loss = ce_loss + 0.1 * p_loss
+            
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            optimizer.step()
+            
+            total_loss += loss.item()
+            total_ce_loss += ce_loss.item()
+            total_p_loss += p_loss.item()
+            
+        # Avaliação de validação rápida (Acurácia Exata)
+        val_acc, avg_steps = evaluate_accuracy(model, val_dataloader, tokenizer, device, use_ponder)
+        
+        print(f"Epoch {epoch+1:02d}/{epochs:02d} | "
+              f"Loss Total: {total_loss/len(dataloader):.4f} | "
+              f"CE Loss: {total_ce_loss/len(dataloader):.4f} | "
+              f"Ponder Loss: {total_p_loss/len(dataloader):.4f} | "
+              f"Val Acc: {val_acc:.2f}% | "
+              f"Passos Médios: {avg_steps:.2f}")
+        
+        if val_acc >= best_acc:
+            best_acc = val_acc
+            os.makedirs("checkpoints", exist_ok=True)
+            torch.save(model.state_dict(), f"checkpoints/{model_name.lower().replace(' ', '_')}_best.pt")
+            
+    # Sempre salvar o modelo final para garantir a existência de checkpoints
+    os.makedirs("checkpoints", exist_ok=True)
+    torch.save(model.state_dict(), f"checkpoints/{model_name.lower().replace(' ', '_')}_best.pt")
+            
+    print(f"Treinamento finalizado. Melhor Acurácia de Validação: {best_acc:.2f}%")
+    return best_acc
+
+def evaluate_accuracy(model, dataloader, tokenizer, device, use_ponder=True):
+    model.eval()
+    correct = 0
+    total = 0
+    total_steps = 0
+    total_samples = 0
+    
+    with torch.no_grad():
+        for batch in dataloader:
+            input_ids = batch["input_ids"].to(device)
+            raw_targets = batch["raw_target"]
+            
+            # Na inferência, geramos autoregressivamente
+            # O target máximo tem comprimento de num_digits + 1
+            max_len = input_ids.shape[1] // 2 + 1
+            
+            # Se for ThinkVetor, podemos rodar e também monitorar os passos
+            # A função generate executa internamente a inferência sem ruído
+            generated_ids = model.generate(input_ids, max_length=max_len, temperature=0.0)
+            
+            # Para monitorar passos médios, precisamos rodar o forward
+            if use_ponder and model.max_ponder_steps > 0:
+                _, halts = model(input_ids, input_ids[:, :1]) # forward simples para pegar halts
+                # halts: lista de tensores (B, seq_len, 1)
+                p = torch.cat(halts, dim=-1) # (B, seq_len, max_steps)
+                # O passo em que parou é ponderado pela probabilidade de parada
+                steps_per_token = (p * torch.arange(1, len(halts)+1, device=device).view(1, 1, -1)).sum(dim=-1)
+                avg_steps_batch = steps_per_token.mean().item()
+                total_steps += avg_steps_batch * input_ids.shape[0]
+                total_samples += input_ids.shape[0]
+            else:
+                total_steps += 0.0
+                total_samples += input_ids.shape[0]
+                
+            for idx, gen_seq in enumerate(generated_ids):
+                pred_str = tokenizer.decode(gen_seq).strip()
+                target_str = raw_targets[idx].strip()
+                
+                # Compara strings
+                if pred_str == target_str:
+                    correct += 1
+                total += 1
+                
+    accuracy = (correct / total) * 100
+    avg_steps = total_steps / total_samples if total_samples > 0 else 0.0
+    return accuracy, avg_steps
+
+def main():
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Usando dispositivo: {device}")
+    
+    # 1. Preparar Tokenizador e Datasets
+    # Usaremos 2 dígitos para manter o treinamento rápido no protótipo (~100 amostras possíveis no máximo, mas criamos 1000 exemplos para treino rápido)
+    num_digits = 2
+    tokenizer = CharTokenizer()
+    
+    train_ds = AdditionDataset(num_digits=num_digits, num_samples=1000, seed=42, tokenizer=tokenizer)
+    val_ds = AdditionDataset(num_digits=num_digits, num_samples=200, seed=99, tokenizer=tokenizer)
+    
+    train_loader = DataLoader(train_ds, batch_size=64, shuffle=True)
+    val_loader = DataLoader(val_ds, batch_size=128, shuffle=False)
+    
+    # 2. Configurar Modelo Baseline (Sem Ponderação)
+    baseline_model = ThinkVetorModel(
+        vocab_size=tokenizer.vocab_size,
+        d_model=64,
+        nhead=4,
+        num_encoder_layers=1,
+        num_decoder_layers=1,
+        max_ponder_steps=0 # Desativa ponderação latente
+    )
+    
+    # 3. Configurar Modelo Think-Vetor (Com Ponderação Latente e Langevin)
+    think_vetor = ThinkVetorModel(
+        vocab_size=tokenizer.vocab_size,
+        d_model=64,
+        nhead=4,
+        num_encoder_layers=1,
+        num_decoder_layers=1,
+        max_ponder_steps=6, # 6 passos de reflexão no máximo
+        num_memories=128,
+        beta=8.0
+    )
+    
+    # 4. Treinar ambos os modelos
+    epochs = 40
+    train_model("Baseline Model", baseline_model, train_loader, val_loader, tokenizer, epochs=epochs, device=device, use_ponder=False)
+    train_model("Think Vetor", think_vetor, train_loader, val_loader, tokenizer, epochs=epochs, device=device, use_ponder=True)
+
+if __name__ == "__main__":
+    main()

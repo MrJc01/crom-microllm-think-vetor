@@ -1,0 +1,105 @@
+import random
+import torch
+from torch.utils.data import Dataset
+
+class CharTokenizer:
+    """
+    Tokenizador simples de caracteres para operações de adição.
+    Mapeia dígitos, operadores e tokens especiais para IDs numéricos.
+    """
+    def __init__(self):
+        self.chars = "0123456789+= "
+        self.char_to_id = {char: idx for idx, char in enumerate(self.chars)}
+        self.id_to_char = {idx: char for idx, char in enumerate(self.chars)}
+        self.pad_id = self.char_to_id[" "]
+        self.vocab_size = len(self.chars)
+
+    def encode(self, text):
+        return [self.char_to_id[c] for c in text if c in self.char_to_id]
+
+    def decode(self, ids):
+        if isinstance(ids, torch.Tensor):
+            ids = ids.tolist()
+        return "".join([self.id_to_char[idx] for idx in ids if idx in self.id_to_char])
+
+class AdditionDataset(Dataset):
+    """
+    Dataset sintético de adição.
+    Gera strings no formato 'A+B=' como entrada e 'C' como resposta,
+    onde C = A + B.
+    """
+    def __init__(self, num_digits=3, num_samples=10000, seed=42, tokenizer=None):
+        super().__init__()
+        self.num_digits = num_digits
+        self.num_samples = num_samples
+        self.tokenizer = tokenizer or CharTokenizer()
+        
+        random.seed(seed)
+        self.samples = []
+        
+        # Determinar limite superior dos números baseado em num_digits
+        max_val = 10**num_digits - 1
+        
+        # Gerar amostras únicas
+        seen = set()
+        while len(self.samples) < num_samples:
+            a = random.randint(0, max_val)
+            b = random.randint(0, max_val)
+            if (a, b) not in seen:
+                seen.add((a, b))
+                
+                # Ex: "123+456=" -> "579"
+                input_str = f"{a}+{b}="
+                target_str = f"{a+b}"
+                
+                self.samples.append((input_str, target_str))
+
+        # Comprimento máximo da entrada e do alvo para fins de padding
+        self.max_input_len = num_digits * 2 + 2 # ex: "999+999=" -> 8 chars
+        self.max_target_len = num_digits + 1    # ex: "1998" -> 4 chars
+
+    def __len__(self):
+        return len(self.samples)
+
+    def __getitem__(self, idx):
+        input_str, target_str = self.samples[idx]
+        
+        # Codificar caracteres
+        input_ids = self.tokenizer.encode(input_str)
+        target_ids = self.tokenizer.encode(target_str)
+        
+        # Padding nas entradas (à esquerda para que o '=' fique alinhado antes do pensamento latente)
+        input_pad_len = self.max_input_len - len(input_ids)
+        input_ids = [self.tokenizer.pad_id] * input_pad_len + input_ids
+        
+        # Padding nos alvos (à direita)
+        target_pad_len = self.max_target_len - len(target_ids)
+        # Para treinamento autoregressivo, adicionamos padding ao target
+        padded_target_ids = target_ids + [self.tokenizer.pad_id] * target_pad_len
+        
+        # Criar máscara para o loss não calcular o padding no target
+        target_mask = [1] * len(target_ids) + [0] * target_pad_len
+        
+        return {
+            "input_ids": torch.tensor(input_ids, dtype=torch.long),
+            "target_ids": torch.tensor(padded_target_ids, dtype=torch.long),
+            "target_mask": torch.tensor(target_mask, dtype=torch.float),
+            "raw_input": input_str,
+            "raw_target": target_str
+        }
+
+if __name__ == "__main__":
+    # Teste rápido
+    tok = CharTokenizer()
+    ds = AdditionDataset(num_digits=3, num_samples=5, tokenizer=tok)
+    for i in range(len(ds)):
+        item = ds[i]
+        print(f"Sample {i}:")
+        print("  Raw Input:  ", item["raw_input"])
+        print("  Raw Target: ", item["raw_target"])
+        print("  Encoded In: ", item["input_ids"])
+        print("  Encoded Out:", item["target_ids"])
+        print("  Mask:       ", item["target_mask"])
+        print("  Decoded In: ", tok.decode(item["input_ids"]))
+        print("  Decoded Out:", tok.decode(item["target_ids"]))
+        print("-" * 30)
