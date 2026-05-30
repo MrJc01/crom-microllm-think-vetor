@@ -136,19 +136,30 @@ class CausalThinkVetorModel(nn.Module):
                 z = h[:, -1:, :]
                 x = torch.cat([x, z], dim=1)
                 
-            # 3. Geração Autoregressiva
-            # Inicializar com o token SOS '=' (índice 11)
-            generated = torch.full((B, 1), 11, dtype=torch.long, device=device)
+            # 3. Geração Autorregressiva
+            # A primeira predição (Y_0) é feita a partir do último token de pensamento (z_K)
+            # O último token de pensamento está na última posição de x
+            logits = self.lm_head(h[:, -1, :])
+            if temperature == 0.0:
+                next_token = torch.argmax(logits, dim=-1, keepdim=True)
+            else:
+                probs = F.softmax(logits / temperature, dim=-1)
+                next_token = torch.multinomial(probs, num_samples=1)
+                
+            generated = [next_token]
             
-            for _ in range(max_length):
-                tgt_emb = self.token_embeddings(generated)
-                x_full = torch.cat([x, tgt_emb], dim=1)
+            # O input inicial para o loop do decodificador é x + SOS '=' (índice 11)
+            sos_token = torch.full((B, 1), 11, dtype=torch.long, device=device)
+            sos_emb = self.token_embeddings(sos_token)
+            x_dec = torch.cat([x, sos_emb], dim=1)
+            
+            for step_idx in range(1, max_length):
+                # Executar o transformer na sequência atual
+                seq_len = x_dec.shape[1]
+                mask = nn.Transformer.generate_square_subsequent_mask(seq_len, device=device)
+                h_full = self.transformer(x_dec, attn_mask=mask, rope=self.rope)
                 
-                full_seq_len = x_full.shape[1]
-                full_mask = nn.Transformer.generate_square_subsequent_mask(full_seq_len, device=device)
-                h_full = self.transformer(x_full, attn_mask=full_mask, rope=self.rope)
-                
-                # Extrair logits do último token predito
+                # Pegar os logits do último token
                 logits = self.lm_head(h_full[:, -1, :])
                 
                 if temperature == 0.0:
@@ -157,9 +168,14 @@ class CausalThinkVetorModel(nn.Module):
                     probs = F.softmax(logits / temperature, dim=-1)
                     next_token = torch.multinomial(probs, num_samples=1)
                     
-                generated = torch.cat([generated, next_token], dim=1)
+                generated.append(next_token)
                 
-            return generated[:, 1:]
+                # Adicionar o token anterior correspondente à sequência de entrada para o próximo passo
+                prev_token = generated[step_idx - 1]
+                prev_emb = self.token_embeddings(prev_token)
+                x_dec = torch.cat([x_dec, prev_emb], dim=1)
+                
+            return torch.cat(generated, dim=1)
 
 if __name__ == "__main__":
     # Teste de integridade de dimensões
