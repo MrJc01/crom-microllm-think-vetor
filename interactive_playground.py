@@ -84,8 +84,14 @@ def detect_architecture_and_tokenizer(checkpoint_path):
         print(f"  Uso de RoPE: {use_rope}")
         
         nhead = 8 if d_model == 128 else 4
-        num_memories = 512 if d_model == 128 else 128
         
+        # Obter o número real de memórias Hopfield a partir do state_dict para evitar incompatibilidade
+        if 'hopfield_ebm.memories' in state_dict:
+            num_memories = state_dict['hopfield_ebm.memories'].shape[0]
+            print(f"  Número de memórias Hopfield detectado: {num_memories}")
+        else:
+            num_memories = 512 if d_model == 128 else 128
+            
         model = ThinkVetorModel(
             vocab_size=vocab_size,
             d_model=d_model,
