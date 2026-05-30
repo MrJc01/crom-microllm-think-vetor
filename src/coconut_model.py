@@ -115,9 +115,9 @@ class CausalThinkVetorModel(nn.Module):
         logits = self.lm_head(target_outputs)
         
         if return_details:
-            return logits, thought_vectors
+            return logits, [], None, thought_vectors
             
-        return logits
+        return logits, []
 
     def generate(self, input_ids, max_length=5, temperature=1.0):
         self.eval()
@@ -167,7 +167,7 @@ if __name__ == "__main__":
     model = CausalThinkVetorModel(vocab_size=13, d_model=64, nhead=2, num_layers=2, max_thought_steps=3)
     x = torch.randint(0, 13, (2, 8)) # batch=2, seq=8
     y = torch.randint(0, 13, (2, 4)) # batch=2, seq=4
-    logits = model(x, y)
+    logits, halts = model(x, y)
     print("Logits shape: ", logits.shape) # Esperado: (2, 4, 13)
     
     gen = model.generate(x, max_length=4, temperature=0.0)
