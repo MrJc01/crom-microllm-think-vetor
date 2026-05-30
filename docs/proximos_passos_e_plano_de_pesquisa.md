@@ -17,9 +17,9 @@ Este plano estabelece os marcos e o checklist de tarefas para as próximas fases
 - [x] **B.3. Mapeamento de Entropia de Atenção**: Decaimento monotônico confirmado em 8 cabeças (4.99→3.77). Relatório em `docs/relatorio_transitividade_multidimensional.md`.
 
 ### Fase C: Raciocínio Aritmético Textual (Integração Lógico-Matemática)
-- [ ] **C.1. Dataset Aritmético Contextual**: Criar um gerador sintético de problemas aritméticos descritivos em texto (ex: *"Alice has 20 cards. Bob has 15. Alice gives 5 to Bob. Who has more?"*).
-- [ ] **C.2. Fusão de Habilidades**: Treinar a Micro-LLM lógica a converter premissas textuais e de valores numéricos em operações internas de soma/subtração e decidir o desfecho lógico final no espaço contínuo.
-- [ ] **C.3. Destilação de Operações**: Aplicar destilação de CoT latente direcionada para guiar o pensador nos passos intermediários de operações matemáticas baseadas em texto.
+- [x] **C.1. Dataset Aritmético Contextual**: Criar um gerador sintético de problemas aritméticos descritivos em texto (ex: *"Alice has 20 cards. Bob has 15. Alice gives 5 to Bob. Who has more?"*).
+- [x] **C.2. Fusão de Habilidades**: Treinar a Micro-LLM lógica a converter premissas textuais e de valores numéricos em operações internas de soma/subtração e decidir o desfecho lógico final no espaço contínuo.
+- [x] **C.3. Destilação de Operações**: Aplicar destilação de CoT latente direcionada para guiar o pensador nos passos intermediários de operações matemáticas baseadas em texto.
 
 ### Fase D: Benchmarking e Comparação de Inteligência
 - [ ] **D.1. Implementação da Baseline Autoregressiva Tradicional**: Desenvolver um modelo autoregressivo puro (Decoder-Only, estilo mini-GPT) de tamanho similar (~1.5M parâmetros) que gera CoT textual de forma discreta (token por token, ex: *"Alice is older than Bob. Bob is older than Charlie. Wait... Bob is younger..."*).
