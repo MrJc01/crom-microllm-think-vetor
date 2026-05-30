@@ -119,6 +119,22 @@ def run_inference(model, tokenizer, prompt, is_causal_coconut, device):
         prompt += "="
         
     input_ids = tokenizer.encode(prompt)
+    
+    # 1. Determinar o max_input_len adequado e aplicar padding à esquerda (essencial para RoPE/Positional Embeddings)
+    vocab_size = model.vocab_size
+    if vocab_size > 50000 or isinstance(tokenizer, LogicCharTokenizer) or (hasattr(tokenizer, "using_hf") and not tokenizer.using_hf and vocab_size > 13):
+        # Domínio Lógico
+        max_input_len = 90
+    else:
+        # Domínio Aritmético
+        max_input_len = 10 if ("align" in model.token_embeddings.weight.device.type or "hybrid" in str(model)) else 6
+        # Fallback inteligente para o caminho do arquivo (mais seguro)
+        if hasattr(model, "max_ponder_steps") and model.max_ponder_steps == 6:
+            max_input_len = 10
+            
+    max_input_len = max(max_input_len, len(input_ids))
+    input_ids = [tokenizer.pad_id] * (max_input_len - len(input_ids)) + input_ids
+    
     input_tensor = torch.tensor(input_ids, dtype=torch.long).unsqueeze(0).to(device)
     
     print("\n" + "="*50)
