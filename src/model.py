@@ -342,7 +342,7 @@ class ThinkVetorModel(nn.Module):
         # Cabeçalho de projeção linear para vocabulário
         self.lm_head = nn.Linear(d_model, vocab_size)
 
-    def forward(self, input_ids, target_ids, return_details=False):
+    def forward(self, input_ids, target_ids, return_details=False, max_ponder_steps=None):
         """
         forward usado durante o treinamento (Teacher Forcing).
         input_ids: (batch_size, input_seq_len)
@@ -368,21 +368,25 @@ class ThinkVetorModel(nn.Module):
         pooled_states = torch.zeros_like(x_encoded)
         intermediate_states = []
         
-        if self.max_ponder_steps > 0:
+        actual_ponder_steps = max_ponder_steps if max_ponder_steps is not None else self.max_ponder_steps
+        
+        if actual_ponder_steps > 0:
             accumulated_remainders = torch.ones(batch_size, seq_len, 1, device=device)
             current_state = x_encoded
             init_temp = 0.5 # temperatura inicial do ruído
             
-            for k in range(self.max_ponder_steps):
-                # Injeta a noção posicional do passo
-                step_emb = self.step_embeddings[k].view(1, 1, d_model)
+            for k in range(actual_ponder_steps):
+                # Injeta a noção posicional do passo (proteção contra extrapolação temporal)
+                step_idx = min(k, self.step_embeddings.shape[0] - 1) if hasattr(self, 'step_embeddings') else 0
+                step_emb = self.step_embeddings[step_idx].view(1, 1, d_model) if hasattr(self, 'step_embeddings') else torch.zeros(1, 1, d_model, device=device)
                 state_with_time = current_state + step_emb
                 
                 # Resfriamento térmico de atenção linear (Simulated Annealing de Atenção)
-                if self.max_ponder_steps > 1:
-                    attn_temp = 2.0 - k * (2.0 - 0.2) / (self.max_ponder_steps - 1)
+                if actual_ponder_steps > 1:
+                    attn_temp = 2.0 - k * (2.0 - 0.2) / (actual_ponder_steps - 1)
                 else:
                     attn_temp = 1.0
+                attn_temp = max(attn_temp, 0.2) # Limitar inferiormente para evitar temp negativa
                     
                 # Executa um ciclo da atenção recorrente com temperatura e RoPE
                 if self.use_rope:
@@ -398,7 +402,7 @@ class ThinkVetorModel(nn.Module):
                 halt_prob = torch.sigmoid(self.halt_classifier(next_state))
                 
                 # PonderNet logic
-                if k == self.max_ponder_steps - 1:
+                if k == actual_ponder_steps - 1:
                     step_halt_prob = accumulated_remainders
                 else:
                     step_halt_prob = halt_prob * accumulated_remainders
@@ -445,7 +449,7 @@ class ThinkVetorModel(nn.Module):
         
         return logits, halting_probabilities
 
-    def generate(self, input_ids, max_length=5, temperature=1.0):
+    def generate(self, input_ids, max_length=5, temperature=1.0, max_ponder_steps=None):
         """
         Inspeciona e gera a resposta autoregressiva token por token.
         Usado em inferência.
@@ -469,20 +473,24 @@ class ThinkVetorModel(nn.Module):
             
             # 2. Ponderação Latente
             pooled_states = torch.zeros_like(x_encoded)
-            if self.max_ponder_steps > 0:
+            actual_ponder_steps = max_ponder_steps if max_ponder_steps is not None else self.max_ponder_steps
+            
+            if actual_ponder_steps > 0:
                 accumulated_remainders = torch.ones(batch_size, x_encoded.shape[1], 1, device=device)
                 current_state = x_encoded
                 init_temp = 0.0 # Sem ruído estocástico na inferência pura para manter determinismo
                 
-                for k in range(self.max_ponder_steps):
-                    step_emb = self.step_embeddings[k].view(1, 1, self.d_model)
+                for k in range(actual_ponder_steps):
+                    step_idx = min(k, self.step_embeddings.shape[0] - 1) if hasattr(self, 'step_embeddings') else 0
+                    step_emb = self.step_embeddings[step_idx].view(1, 1, self.d_model) if hasattr(self, 'step_embeddings') else torch.zeros(1, 1, self.d_model, device=device)
                     state_with_time = current_state + step_emb
                     
                     # Resfriamento térmico de atenção linear na inferência
-                    if self.max_ponder_steps > 1:
-                        attn_temp = 2.0 - k * (2.0 - 0.2) / (self.max_ponder_steps - 1)
+                    if actual_ponder_steps > 1:
+                        attn_temp = 2.0 - k * (2.0 - 0.2) / (actual_ponder_steps - 1)
                     else:
                         attn_temp = 1.0
+                    attn_temp = max(attn_temp, 0.2) # Limitar inferiormente para evitar temp negativa
                         
                     if self.use_rope:
                         next_state = self.recurrent_layer(state_with_time, temp=attn_temp, rope=self.rope)
@@ -491,7 +499,7 @@ class ThinkVetorModel(nn.Module):
                     next_state = self.hopfield_ebm(next_state, temp=init_temp, lr=0.1)
                     
                     halt_prob = torch.sigmoid(self.halt_classifier(next_state))
-                    if k == self.max_ponder_steps - 1:
+                    if k == actual_ponder_steps - 1:
                         step_halt_prob = accumulated_remainders
                     else:
                         step_halt_prob = halt_prob * accumulated_remainders
