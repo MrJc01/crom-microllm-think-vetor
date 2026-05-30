@@ -45,6 +45,7 @@ def main():
     parser.add_argument("--batch_size", type=int, default=32, help="Tamanho do lote.")
     parser.add_argument("--num_samples", type=int, default=1000, help="Número de amostras de treino.")
     parser.add_argument("--mutable_context", action="store_true", help="Ativar injeção estocástica de erratas e contradições lógicas.")
+    parser.add_argument("--multidimensional", action="store_true", help="Ativar tarefas lógicas multidimensionais com múltiplos atributos no mesmo contexto.")
     parser.add_argument("--tokenizer_name", type=str, default="char", help="Nome do tokenizer ('char' ou nome/caminho do modelo HuggingFace).")
     
     args = parser.parse_args()
@@ -60,8 +61,8 @@ def main():
         tokenizer = HFTokenizerWrapper(args.tokenizer_name)
     
     # Criar Datasets (80% treino e 20% validação disjuntos)
-    train_ds = LogicDataset(num_samples=args.num_samples, seed=42, tokenizer=tokenizer, mutable_context=args.mutable_context)
-    val_ds = LogicDataset(num_samples=args.num_samples // 5, seed=43, tokenizer=tokenizer, mutable_context=args.mutable_context)
+    train_ds = LogicDataset(num_samples=args.num_samples, seed=42, tokenizer=tokenizer, mutable_context=args.mutable_context, multidimensional=args.multidimensional)
+    val_ds = LogicDataset(num_samples=args.num_samples // 5, seed=43, tokenizer=tokenizer, mutable_context=args.mutable_context, multidimensional=args.multidimensional)
     
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True)
     val_loader = DataLoader(val_ds, batch_size=args.batch_size * 2, shuffle=False)

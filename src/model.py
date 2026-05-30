@@ -170,6 +170,7 @@ class MultiHeadAttentionWithTemperature(nn.Module):
         
         # 3. Aplicar Softmax
         attn_weights = F.softmax(scores, dim=-1)
+        self.last_attn_weights = attn_weights.detach()
         
         # 4. Combinar com os valores
         context = torch.matmul(attn_weights, v) # (B, nhead, S, head_dim)

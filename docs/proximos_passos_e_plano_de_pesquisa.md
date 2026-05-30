@@ -12,9 +12,9 @@ Este plano estabelece os marcos e o checklist de tarefas para as próximas fases
 - [ ] **A.3. Mapeamento Energético OOD**: Analisar as curvas de decaimento de energia livre das memórias Hopfield em testes OOD de maior comprimento para mapear se os atratores mantêm a estabilidade.
 
 ### Fase B: Transitividade Multidimensional (Múltiplos Atributos)
-- [ ] **B.1. Gerador de Dados Multiatributo**: Implementar em `src/logic_dataset.py` suporte a múltiplos tipos de relações misturadas no mesmo prompt (ex: idade e riqueza ao mesmo tempo: *"A is older than B. B is richer than C. A is younger than C."*).
-- [ ] **B.2. Desacoplamento no Espaço de Embeddings**: Avaliar se os embeddings e as projeções lineares do decodificador conseguem mapear respostas corretas para dimensões diferentes sem contaminação mútua.
-- [ ] **B.3. Mapeamento de Entropia de Atenção**: Medir a dispersão dos pesos de atenção cruzada e auto-atenção ao segmentar diferentes atributos.
+- [x] **B.1. Gerador de Dados Multiatributo**: Implementado com parâmetro `multidimensional=True` em `src/logic_dataset.py`. Suporte a 2 atributos simultâneos com metadados `extra_info`.
+- [x] **B.2. Desacoplamento no Espaço de Embeddings**: Probes lineares treinados. Ângulo de ortogonalidade emergente: **92.68°** (cosseno: -0.047). Geometria latente favorável ao desacoplamento dimensional.
+- [x] **B.3. Mapeamento de Entropia de Atenção**: Decaimento monotônico confirmado em 8 cabeças (4.99→3.77). Relatório em `docs/relatorio_transitividade_multidimensional.md`.
 
 ### Fase C: Raciocínio Aritmético Textual (Integração Lógico-Matemática)
 - [ ] **C.1. Dataset Aritmético Contextual**: Criar um gerador sintético de problemas aritméticos descritivos em texto (ex: *"Alice has 20 cards. Bob has 15. Alice gives 5 to Bob. Who has more?"*).
