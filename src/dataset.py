@@ -86,6 +86,37 @@ class AdditionDataset(Dataset):
 
         # Inicialização do comprimento máximo do padding concluída
 
+    def get_cot_trace(self, a, b):
+        """
+        Gera a sequência passo a passo de soma e carry para alinhar com os passos
+        do loop recorrente de reflexão (Fronteira 3).
+        E.g. para 73+67, gera "014110" (soma_0, carry_0, soma_1, carry_1, soma_2, carry_2)
+        """
+        str_a = str(a)[::-1]
+        str_b = str(b)[::-1]
+        max_d = max(len(str_a), len(str_b))
+        
+        trace = []
+        carry = 0
+        for i in range(max_d):
+            digit_a = int(str_a[i]) if i < len(str_a) else 0
+            digit_b = int(str_b[i]) if i < len(str_b) else 0
+            
+            step_sum = digit_a + digit_b + carry
+            out_digit = step_sum % 10
+            carry = step_sum // 10
+            
+            trace.append(str(out_digit))
+            trace.append(str(carry))
+            
+        # Adicionar o carry final
+        trace.append(str(carry))
+        trace.append("0") # final carry sem carry seguinte
+        
+        # Une a cadeia de rastreamento
+        trace_str = "".join(trace)
+        return trace_str
+
     def __len__(self):
         return len(self.samples)
 
@@ -96,6 +127,24 @@ class AdditionDataset(Dataset):
         input_ids = self.tokenizer.encode(input_str)
         target_ids = self.tokenizer.encode(target_str)
         
+        # Extrair valores numéricos para gerar a cadeia de raciocínio passo a passo
+        try:
+            raw_in = input_str.replace(" ", "").replace("=", "")
+            parts = raw_in.split("+")
+            a_val = int(parts[0])
+            b_val = int(parts[1])
+            cot_str = self.get_cot_trace(a_val, b_val)
+            cot_ids = self.tokenizer.encode(cot_str)
+        except Exception:
+            cot_ids = []
+            
+        # Garantir tamanho fixo igual a self.max_input_len para colação correta no DataLoader
+        cot_pad_len = self.max_input_len - len(cot_ids)
+        if cot_pad_len > 0:
+            cot_ids = cot_ids + [self.tokenizer.pad_id] * cot_pad_len
+        else:
+            cot_ids = cot_ids[:self.max_input_len]
+            
         # Padding nas entradas (à esquerda para que o '=' fique alinhado antes do pensamento latente ou à direita)
         input_pad_len = self.max_input_len - len(input_ids)
         if self.pad_left:
@@ -117,6 +166,7 @@ class AdditionDataset(Dataset):
             "input_ids": torch.tensor(input_ids, dtype=torch.long),
             "target_ids": torch.tensor(padded_target_ids, dtype=torch.long),
             "target_mask": torch.tensor(target_mask, dtype=torch.float),
+            "cot_ids": torch.tensor(cot_ids, dtype=torch.long),
             "raw_input": input_str,
             "raw_target": target_str
         }
@@ -132,6 +182,8 @@ if __name__ == "__main__":
         print("  Raw Target: ", item["raw_target"])
         print("  Encoded In: ", item["input_ids"])
         print("  Encoded Out:", item["target_ids"])
+        print("  CoT IDs:    ", item["cot_ids"])
+        print("  Decoded CoT:", tok.decode(item["cot_ids"]))
         print("  Mask:       ", item["target_mask"])
         print("  Decoded In: ", tok.decode(item["input_ids"]))
         print("  Decoded Out:", tok.decode(item["target_ids"]))

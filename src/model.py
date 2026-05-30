@@ -72,7 +72,25 @@ class LangevinHopfieldBlock(nn.Module):
         # Memórias armazenadas (padrões de atrator aprendíveis)
         self.memories = nn.Parameter(torch.randn(num_memories, d_model) * (d_model ** -0.5))
 
-    def forward(self, z, temp=0.1, lr=0.1):
+    def compute_energy(self, z):
+        """
+        Calcula a energia de Hopfield livre do estado z.
+        E(z) = - (1/beta) * log(sum(exp(beta * X * z))) + 0.5 * ||z||^2
+        """
+        # z: (batch_size, seq_len, d_model)
+        logits = torch.matmul(z, self.memories.T) * self.beta # (B, S, num_memories)
+        
+        # Log-Sum-Exp escalado
+        lse = torch.logsumexp(logits, dim=-1) / self.beta # (B, S)
+        
+        # Regularização quadrática
+        quadratic = 0.5 * torch.norm(z, p=2, dim=-1) ** 2 # (B, S)
+        
+        # Energia média por vetor latente
+        energy = - lse + quadratic
+        return energy.mean()
+
+    def forward(self, z, temp=0.1, lr=0.1, return_entropy=False):
         """
         Executa uma única iteração de descida de gradiente de energia + ruído estocástico.
         z: (batch_size, seq_len, d_model)
@@ -97,6 +115,12 @@ class LangevinHopfieldBlock(nn.Module):
             # Desvio padrão do ruído térmico
             noise_scale = torch.sqrt(torch.tensor(2.0 * temp * lr, device=z.device))
             z_next = z_next + noise_scale * noise
+            
+        if return_entropy:
+            # p_avg: distribuição média das ativações das memórias ao longo do lote e da sequência
+            p_avg = attn_weights.mean(dim=(0, 1)) # (num_memories,)
+            entropy = - (p_avg * torch.log(p_avg + 1e-8)).sum()
+            return z_next, entropy
             
         return z_next
 
@@ -342,6 +366,7 @@ class ThinkVetorModel(nn.Module):
         # Inicializar variáveis da Ponderação Latente
         halting_probabilities = []
         pooled_states = torch.zeros_like(x_encoded)
+        intermediate_states = []
         
         if self.max_ponder_steps > 0:
             accumulated_remainders = torch.ones(batch_size, seq_len, 1, device=device)
@@ -382,6 +407,7 @@ class ThinkVetorModel(nn.Module):
                 # Acumula representação ponderada
                 pooled_states = pooled_states + step_halt_prob * next_state
                 halting_probabilities.append(step_halt_prob)
+                intermediate_states.append(next_state[:, -1, :])
                 
                 current_state = next_state
         else:
@@ -415,7 +441,7 @@ class ThinkVetorModel(nn.Module):
         logits = self.lm_head(decoded)
         
         if return_details:
-            return logits, halting_probabilities, pooled_states
+            return logits, halting_probabilities, pooled_states, intermediate_states
         
         return logits, halting_probabilities
 
