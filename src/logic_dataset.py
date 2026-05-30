@@ -36,13 +36,18 @@ class LogicDataset(Dataset):
     Ex: "Alice is taller than Bob. Bob is taller than Charlie. Who is taller, Alice or Charlie?=" -> "Alice"
     Cadeia de raciocínio contínua (CoT): "Alice>Bob Bob>Charlie Alice>Charlie"
     """
-    def __init__(self, num_samples=1000, seed=42, tokenizer=None, max_input_len=90, max_target_len=15, mutable_context=False):
+    def __init__(self, num_samples=1000, seed=42, tokenizer=None, max_input_len=90, max_target_len=15, mutable_context=False, num_entities=3):
         super().__init__()
         if isinstance(tokenizer, str):
             from src.hf_tokenizer_wrapper import HFTokenizerWrapper
             self.tokenizer = HFTokenizerWrapper(tokenizer)
         else:
             self.tokenizer = tokenizer or LogicCharTokenizer()
+        
+        self.num_entities = num_entities
+        if max_input_len == 90 and num_entities > 3:
+            max_input_len = 30 * num_entities + 30
+            
         self.max_input_len = max_input_len
         self.max_target_len = max_target_len
         self.mutable_context = mutable_context
@@ -60,66 +65,101 @@ class LogicDataset(Dataset):
         ]
         
         for _ in range(num_samples):
-            # Escolher 3 nomes distintos: X, Y, Z (na ordem lógica provisória X > Y > Z)
-            selected_names = random.sample(names, 3)
-            x, y, z = selected_names[0], selected_names[1], selected_names[2]
-            
-            # Relação lógica
-            rel = random.choice(relations)
-            
-            # Sentenças provisórias estabelecendo X > Y e Y > Z
-            if random.random() > 0.5:
-                s1 = f"{x} is {rel['positive']} than {y}."
-            else:
-                s1 = f"{y} is {rel['negative']} than {x}."
+            if num_entities == 3:
+                # Escolher 3 nomes distintos: X, Y, Z (na ordem lógica provisória X > Y > Z)
+                selected_names = random.sample(names, 3)
+                x, y, z = selected_names[0], selected_names[1], selected_names[2]
                 
-            if random.random() > 0.5:
-                s2 = f"{y} is {rel['positive']} than {z}."
-            else:
-                s2 = f"{z} is {rel['negative']} than {y}."
+                # Relação lógica
+                rel = random.choice(relations)
                 
-            context = f"{s1} {s2}"
-            
-            # Verificar se aplicamos errata de correção no contexto
-            apply_errata = self.mutable_context and (random.random() < 0.4)
-            
-            if apply_errata:
-                errata_type = random.choice(["invert_first", "invert_second"])
-                if errata_type == "invert_first":
-                    # Inverte X > Y para Y > X. Ordem final: Y > X > Z.
-                    errata_phrase = f"Wait, {x} is {rel['negative']} than {y}."
-                    context = f"{context} {errata_phrase}"
-                    
-                    # Pergunta sobre a nova ordem transitiva entre Y e Z
-                    if random.random() > 0.5:
-                        question = f"Who is {rel['positive']}, {y} or {z}?="
-                        answer = y
-                    else:
-                        question = f"Who is {rel['negative']}, {y} or {z}?="
-                        answer = z
-                    cot_str = f"{y}>{x} {x}>{z} {y}>{z}"
+                # Sentenças provisórias estabelecendo X > Y e Y > Z
+                if random.random() > 0.5:
+                    s1 = f"{x} is {rel['positive']} than {y}."
                 else:
-                    # Inverte Y > Z para Z > Y. Ordem final: X > Z > Y.
-                    errata_phrase = f"Wait, {y} is {rel['negative']} than {z}."
-                    context = f"{context} {errata_phrase}"
+                    s1 = f"{y} is {rel['negative']} than {x}."
                     
-                    # Pergunta sobre a nova ordem transitiva entre X e Z
+                if random.random() > 0.5:
+                    s2 = f"{y} is {rel['positive']} than {z}."
+                else:
+                    s2 = f"{z} is {rel['negative']} than {y}."
+                    
+                context = f"{s1} {s2}"
+                
+                # Verificar se aplicamos errata de correção no contexto
+                apply_errata = self.mutable_context and (random.random() < 0.4)
+                
+                if apply_errata:
+                    errata_type = random.choice(["invert_first", "invert_second"])
+                    if errata_type == "invert_first":
+                        # Inverte X > Y para Y > X. Ordem final: Y > X > Z.
+                        errata_phrase = f"Wait, {x} is {rel['negative']} than {y}."
+                        context = f"{context} {errata_phrase}"
+                        
+                        # Pergunta sobre a nova ordem transitiva entre Y e Z
+                        if random.random() > 0.5:
+                            question = f"Who is {rel['positive']}, {y} or {z}?="
+                            answer = y
+                        else:
+                            question = f"Who is {rel['negative']}, {y} or {z}?="
+                            answer = z
+                        cot_str = f"{y}>{x} {x}>{z} {y}>{z}"
+                    else:
+                        # Inverte Y > Z para Z > Y. Ordem final: X > Z > Y.
+                        errata_phrase = f"Wait, {y} is {rel['negative']} than {z}."
+                        context = f"{context} {errata_phrase}"
+                        
+                        # Pergunta sobre a nova ordem transitiva entre X e Z
+                        if random.random() > 0.5:
+                            question = f"Who is {rel['positive']}, {x} or {z}?="
+                            answer = x
+                        else:
+                            question = f"Who is {rel['negative']}, {x} or {z}?="
+                            answer = z
+                        cot_str = f"{x}>{z} {z}>{y} {x}>{y}"
+                else:
+                    # Sem errata. Ordem clássica: X > Y > Z
                     if random.random() > 0.5:
                         question = f"Who is {rel['positive']}, {x} or {z}?="
                         answer = x
                     else:
                         question = f"Who is {rel['negative']}, {x} or {z}?="
                         answer = z
-                    cot_str = f"{x}>{z} {z}>{y} {x}>{y}"
+                    cot_str = f"{x}>{y} {y}>{z} {x}>{z}"
             else:
-                # Sem errata. Ordem clássica: X > Y > Z
+                # Caso geral de num_entities > 3 (sem errata por padrão para extrapolação linear OOD)
+                selected_names = random.sample(names, num_entities)
+                rel = random.choice(relations)
+                
+                # Gerar sentenças encadeadas: E_0 > E_1 > E_2 > ... > E_{n-1}
+                sentences = []
+                for i in range(num_entities - 1):
+                    e_curr = selected_names[i]
+                    e_next = selected_names[i+1]
+                    if random.random() > 0.5:
+                        sentences.append(f"{e_curr} is {rel['positive']} than {e_next}.")
+                    else:
+                        sentences.append(f"{e_next} is {rel['negative']} than {e_curr}.")
+                
+                context = " ".join(sentences)
+                
+                # Perguntar sobre o primeiro e o último (max_distance para exigir trânsito completo)
+                first_ent = selected_names[0]
+                last_ent = selected_names[-1]
+                
                 if random.random() > 0.5:
-                    question = f"Who is {rel['positive']}, {x} or {z}?="
-                    answer = x
+                    question = f"Who is {rel['positive']}, {first_ent} or {last_ent}?="
+                    answer = first_ent
                 else:
-                    question = f"Who is {rel['negative']}, {x} or {z}?="
-                    answer = z
-                cot_str = f"{x}>{y} {y}>{z} {x}>{z}"
+                    question = f"Who is {rel['negative']}, {first_ent} or {last_ent}?="
+                    answer = last_ent
+                
+                # Construir CoT: E_0>E_1 E_1>E_2 ... E_0>E_n
+                cot_parts = []
+                for i in range(num_entities - 1):
+                    cot_parts.append(f"{selected_names[i]}>{selected_names[i+1]}")
+                cot_parts.append(f"{first_ent}>{last_ent}")
+                cot_str = " ".join(cot_parts)
                 
             input_str = f"{context} {question}"
             target_str = answer
@@ -171,7 +211,7 @@ class LogicDataset(Dataset):
 if __name__ == "__main__":
     tok = LogicCharTokenizer()
     ds = LogicDataset(num_samples=20, tokenizer=tok, mutable_context=True)
-    print("=== Testando Dataset de Transitividade Mutável ===")
+    print("=== Testando Dataset de Transitividade Mutável (3 Entidades) ===")
     count = 0
     for i in range(len(ds)):
         item = ds[i]
@@ -180,8 +220,17 @@ if __name__ == "__main__":
             print("  Raw Input:  ", item["raw_input"])
             print("  Raw Target: ", item["raw_target"])
             print("  Raw CoT:    ", item["raw_cot"])
-            print("  Mask:       ", item["target_mask"])
             print("-" * 50)
             count += 1
-            if count >= 3:
+            if count >= 2:
                 break
+                
+    print("\n=== Testando Dataset de Transitividade Extrapolada (4 Entidades) ===")
+    ds4 = LogicDataset(num_samples=5, tokenizer=tok, num_entities=4)
+    for i in range(len(ds4)):
+        item = ds4[i]
+        print(f"Amostra {i+1}:")
+        print("  Raw Input:  ", item["raw_input"])
+        print("  Raw Target: ", item["raw_target"])
+        print("  Raw CoT:    ", item["raw_cot"])
+        print("-" * 50)
