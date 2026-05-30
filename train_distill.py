@@ -13,10 +13,17 @@ def train_distill_model(model, dataloader, val_dataloader, tokenizer, epochs=10,
     print(f"\n=== Iniciando Treinamento com Destilação Latente ===")
     model = model.to(device)
     optimizer = optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-4)
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
     criterion = nn.CrossEntropyLoss(reduction="none")
     distill_criterion = DistillLoss(weight_cosine=1.0, weight_mse=0.1)
     
+    device_type = "cuda" if "cuda" in str(device) else "cpu"
+    scaler = torch.amp.GradScaler("cuda", enabled=(device_type == "cuda"))
+    
     best_acc = 0.0
+    epochs_no_improve = 0
+    stable_perfect_epochs = 0
+    patience = 8
     
     for epoch in range(epochs):
         model.train()
@@ -33,43 +40,50 @@ def train_distill_model(model, dataloader, val_dataloader, tokenizer, epochs=10,
             
             optimizer.zero_grad()
             
-            # Forward pass com return_details=True para extrair hidden states intermediários
-            logits, halts, pooled_states, intermediate_states = model(input_ids, target_ids, return_details=True)
-            
-            # 1. Perda de Cross-Entropy (geração de texto)
-            B, T, V = logits.shape
-            logits_flat = logits.view(-1, V)
-            targets_flat = target_ids.view(-1)
-            mask_flat = target_mask.view(-1)
-            
-            ce_loss_raw = criterion(logits_flat, targets_flat)
-            ce_loss = (ce_loss_raw * mask_flat).sum() / (mask_flat.sum() + 1e-8)
-            
-            # 2. Perda de Ponderação (PonderNet)
-            if len(halts) > 0:
-                p_loss = compute_ponder_loss(halts, prior_prob=0.3)
-            else:
-                p_loss = torch.tensor(0.0, device=device)
+            # Forward pass com autocast
+            with torch.amp.autocast("cuda", enabled=(device_type == "cuda")):
+                # Forward pass com return_details=True para extrair hidden states intermediários
+                logits, halts, pooled_states, intermediate_states = model(input_ids, target_ids, return_details=True)
                 
-            # 3. Perda de Destilação Latente
-            # Embeddar os CoT IDs usando a própria tabela de embeddings do modelo
-            with torch.no_grad():
-                cot_embeddings = model.token_embeddings(cot_ids) # (B, K, d_model)
+                # 1. Perda de Cross-Entropy (geração de texto)
+                B, T, V = logits.shape
+                logits_flat = logits.view(-1, V)
+                targets_flat = target_ids.view(-1)
+                mask_flat = target_mask.view(-1)
                 
-            d_loss = distill_criterion(intermediate_states, cot_embeddings)
+                ce_loss_raw = criterion(logits_flat, targets_flat)
+                ce_loss = (ce_loss_raw * mask_flat).sum() / (mask_flat.sum() + 1e-8)
+                
+                # 2. Perda de Ponderação (PonderNet)
+                if len(halts) > 0:
+                    p_loss = compute_ponder_loss(halts, prior_prob=0.3)
+                else:
+                    p_loss = torch.tensor(0.0, device=device)
+                    
+                # 3. Perda de Destilação Latente (Truncar para bater com os passos de reflexão)
+                # Embeddar os CoT IDs usando a própria tabela de embeddings do modelo
+                with torch.no_grad():
+                    cot_embeddings = model.token_embeddings(cot_ids) # (B, K, d_model)
+                seq_len_distill = len(intermediate_states)
+                d_loss = distill_criterion(intermediate_states, cot_embeddings[:, :seq_len_distill, :])
+                
+                # Perda Híbrida Combinada
+                loss = ce_loss + 0.1 * p_loss + 0.5 * d_loss
             
-            # Perda Híbrida Combinada
-            loss = ce_loss + 0.1 * p_loss + 0.5 * d_loss
-            
-            loss.backward()
+            # Backward pass com GradScaler
+            scaler.scale(loss).backward()
+            scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            optimizer.step()
+            scaler.step(optimizer)
+            scaler.update()
             
             total_loss += loss.item()
             total_ce_loss += ce_loss.item()
             total_p_loss += p_loss.item()
             total_d_loss += d_loss.item()
             
+        scheduler.step()
+        
         # Avaliação de validação rápida (Acurácia Exata)
         val_acc, avg_steps = evaluate_accuracy(model, val_dataloader, tokenizer, device, use_ponder=True)
         
@@ -81,10 +95,30 @@ def train_distill_model(model, dataloader, val_dataloader, tokenizer, epochs=10,
               f"Val Acc: {val_acc:.2f}% | "
               f"Passos Médios: {avg_steps:.2f}")
         
-        if val_acc >= best_acc:
+        # Early stopping condicional
+        if val_acc > best_acc:
             best_acc = val_acc
+            epochs_no_improve = 0
             os.makedirs("checkpoints", exist_ok=True)
             torch.save(model.state_dict(), "checkpoints/think_vetor_distill_best.pt")
+        else:
+            epochs_no_improve += 1
+            
+        # Contagem de épocas com acurácia de 100%
+        if val_acc >= 100.0:
+            stable_perfect_epochs += 1
+        else:
+            stable_perfect_epochs = 0
+            
+        # Parada se bater acurácia perfeita por 3 épocas consecutivas
+        if stable_perfect_epochs >= 3:
+            print(f"[Early Stopping] Acurácia de validação perfeita estável (100.00%) por 3 épocas. Parando.")
+            break
+            
+        # Parada se paciência esgotar
+        if epochs_no_improve >= patience:
+            print(f"[Early Stopping] Sem melhorias na validação por {patience} épocas. Parando.")
+            break
             
     print(f"Treinamento finalizado. Melhor Acurácia de Validação (Destilado): {best_acc:.2f}%")
     return best_acc

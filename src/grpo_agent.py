@@ -19,18 +19,17 @@ class GRPOAgent:
         self.optimizer = optimizer
         self.tokenizer = tokenizer
         self.group_size = group_size
-        self.kl_coef = kl_coef
         self.criterion = nn.CrossEntropyLoss(reduction="none")
 
-    def compute_grpo_loss(self, input_ids, target_ids, target_mask, device):
+    def compute_grpo_loss(self, input_ids, target_ids, target_mask, device, scaler=None):
         # input_ids: (B, L)
         # target_ids: (B, T)
         # target_mask: (B, T)
         B, L = input_ids.shape
         G = self.group_size
+        device_type = "cuda" if "cuda" in str(device) else "cpu"
         
         # 1. Replicar entradas G vezes para amostragem do grupo
-        # input_ids_rep: (B * G, L)
         input_ids_rep = input_ids.repeat_interleave(G, dim=0)
         target_ids_rep = target_ids.repeat_interleave(G, dim=0)
         target_mask_rep = target_mask.repeat_interleave(G, dim=0)
@@ -39,12 +38,11 @@ class GRPOAgent:
         self.model.eval()
         rewards = []
         with torch.no_grad():
-            # max_length do target
             max_len = target_ids.shape[1]
-            # Gerar com temperatura para obter diversidade no grupo
-            gen_ids = self.model.generate(input_ids_rep, max_length=max_len, temperature=0.7)
+            # Usar autocast durante geração para acelerar
+            with torch.amp.autocast("cuda", enabled=(device_type == "cuda")):
+                gen_ids = self.model.generate(input_ids_rep, max_length=max_len, temperature=0.7)
             
-            # Avaliar recompensa para cada geração (1.0 se for Exact Match com o alvo, 0.0 caso contrário)
             for idx, gen_seq in enumerate(gen_ids):
                 pred_str = self.tokenizer.decode(gen_seq).strip()
                 target_str = self.tokenizer.decode(target_ids_rep[idx]).strip()
@@ -65,37 +63,45 @@ class GRPOAgent:
         advantages = (rewards_grouped - mean_r) / std_r # (B, G)
         advantages = advantages.view(-1) # (B * G)
         
-        # 4. Forward pass e cálculo do gradiente de política
+        # 4. Forward pass e cálculo do gradiente de política com autocast
         self.optimizer.zero_grad()
         
-        logits, halts = self.model(input_ids_rep, target_ids_rep) # (B * G, T, V)
-        
-        # Perda de Cross Entropy por token
-        B_G, T, V = logits.shape
-        logits_flat = logits.view(-1, V)
-        targets_flat = target_ids_rep.view(-1)
-        mask_flat = target_mask_rep.view(-1)
-        
-        ce_loss_raw = self.criterion(logits_flat, targets_flat) # (B * G * T)
-        ce_loss_per_sequence = (ce_loss_raw.view(B_G, T) * target_mask_rep).sum(dim=-1) / (target_mask_rep.sum(dim=-1) + 1e-8) # (B * G)
-        
-        # Perda de política: CE ponderada pela vantagem negativa
-        policy_loss = (ce_loss_per_sequence * (-advantages)).mean()
-        
-        # Termo de Supervised Fine-Tuning (SFT) para guiar o início do treino (cold start)
-        sft_loss = ce_loss_per_sequence.mean()
-        
-        # Adicionar perda do PonderNet se aplicável
-        if len(halts) > 0:
-            p_loss = compute_ponder_loss(halts, prior_prob=0.3)
-        else:
-            p_loss = torch.tensor(0.0, device=device)
+        with torch.amp.autocast("cuda", enabled=(device_type == "cuda")):
+            logits, halts = self.model(input_ids_rep, target_ids_rep) # (B * G, T, V)
             
-        total_loss = policy_loss + 0.1 * p_loss + 0.5 * sft_loss
+            # Perda de Cross Entropy por token
+            B_G, T, V = logits.shape
+            logits_flat = logits.view(-1, V)
+            targets_flat = target_ids_rep.view(-1)
+            mask_flat = target_mask_rep.view(-1)
+            
+            ce_loss_raw = self.criterion(logits_flat, targets_flat) # (B * G * T)
+            ce_loss_per_sequence = (ce_loss_raw.view(B_G, T) * target_mask_rep).sum(dim=-1) / (target_mask_rep.sum(dim=-1) + 1e-8) # (B * G)
+            
+            # Perda de política: CE ponderada pela vantagem negativa
+            policy_loss = (ce_loss_per_sequence * (-advantages)).mean()
+            
+            # Termo de Supervised Fine-Tuning (SFT) para guiar o início do treino (cold start)
+            sft_loss = ce_loss_per_sequence.mean()
+            
+            # Adicionar perda do PonderNet se aplicável
+            if len(halts) > 0:
+                p_loss = compute_ponder_loss(halts, prior_prob=0.3)
+            else:
+                p_loss = torch.tensor(0.0, device=device)
+                
+            total_loss = policy_loss + 0.1 * p_loss + 0.5 * sft_loss
         
-        total_loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
-        self.optimizer.step()
+        if scaler is not None and device_type == "cuda":
+            scaler.scale(total_loss).backward()
+            scaler.unscale_(self.optimizer)
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+            scaler.step(self.optimizer)
+            scaler.update()
+        else:
+            total_loss.backward()
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+            self.optimizer.step()
         
         return total_loss.item(), policy_loss.item(), rewards.mean().item()
 
@@ -103,9 +109,17 @@ def train_grpo(model, dataloader, val_dataloader, tokenizer, epochs=5, device="c
     print("\n=== Iniciando Treinamento GRPO ===")
     model = model.to(device)
     optimizer = optim.AdamW(model.parameters(), lr=5e-4, weight_decay=1e-4)
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
     agent = GRPOAgent(model, optimizer, tokenizer, group_size=4)
     
+    device_type = "cuda" if "cuda" in str(device) else "cpu"
+    scaler = torch.amp.GradScaler("cuda", enabled=(device_type == "cuda"))
+    
     best_acc = 0.0
+    epochs_no_improve = 0
+    stable_perfect_epochs = 0
+    patience = 8
+    
     for epoch in range(epochs):
         model.train()
         total_loss = 0.0
@@ -117,11 +131,13 @@ def train_grpo(model, dataloader, val_dataloader, tokenizer, epochs=5, device="c
             target_ids = batch["target_ids"].to(device)
             target_mask = batch["target_mask"].to(device)
             
-            loss, p_loss, avg_reward = agent.compute_grpo_loss(input_ids, target_ids, target_mask, device)
+            loss, p_loss, avg_reward = agent.compute_grpo_loss(input_ids, target_ids, target_mask, device, scaler=scaler)
             total_loss += loss
             total_policy_loss += p_loss
             total_reward += avg_reward
             
+        scheduler.step()
+        
         val_acc, avg_steps = evaluate_accuracy(model, val_dataloader, tokenizer, device, use_ponder=True)
         print(f"Epoch {epoch+1:02d}/{epochs:02d} | "
               f"Loss Total: {total_loss/len(dataloader):.4f} | "
@@ -130,10 +146,30 @@ def train_grpo(model, dataloader, val_dataloader, tokenizer, epochs=5, device="c
               f"Val Acc: {val_acc:.2f}% | "
               f"Passos Médios: {avg_steps:.2f}")
         
-        if val_acc >= best_acc:
+        # Early stopping condicional
+        if val_acc > best_acc:
             best_acc = val_acc
+            epochs_no_improve = 0
             os.makedirs("checkpoints", exist_ok=True)
             torch.save(model.state_dict(), "checkpoints/think_vetor_grpo_best.pt")
+        else:
+            epochs_no_improve += 1
+            
+        # Contagem de épocas com acurácia de 100%
+        if val_acc >= 100.0:
+            stable_perfect_epochs += 1
+        else:
+            stable_perfect_epochs = 0
+            
+        # Parada se bater acurácia perfeita por 3 épocas consecutivas
+        if stable_perfect_epochs >= 3:
+            print(f"[Early Stopping] Acurácia de validação perfeita estável (100.00%) por 3 épocas. Parando.")
+            break
+            
+        # Parada se paciência esgotar
+        if epochs_no_improve >= patience:
+            print(f"[Early Stopping] Sem melhorias na validação por {patience} épocas. Parando.")
+            break
             
     print(f"Treinamento GRPO finalizado. Melhor Acurácia de Validação: {best_acc:.2f}%")
     return best_acc

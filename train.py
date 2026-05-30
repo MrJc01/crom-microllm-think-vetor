@@ -42,9 +42,16 @@ def train_model(model_name, model, dataloader, val_dataloader, tokenizer, epochs
     print(f"\n=== Iniciando Treinamento: {model_name} ===")
     model = model.to(device)
     optimizer = optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-4)
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
     criterion = nn.CrossEntropyLoss(reduction="none") # Usamos none para aplicar a máscara do padding
     
+    device_type = "cuda" if "cuda" in str(device) else "cpu"
+    scaler = torch.amp.GradScaler("cuda", enabled=(device_type == "cuda"))
+    
     best_acc = 0.0
+    epochs_no_improve = 0
+    stable_perfect_epochs = 0
+    patience = 8  # Interrompe se não melhorar a acurácia de validação por 8 épocas
     
     for epoch in range(epochs):
         model.train()
@@ -59,37 +66,41 @@ def train_model(model_name, model, dataloader, val_dataloader, tokenizer, epochs
             
             optimizer.zero_grad()
             
-            # Forward pass
-            logits, halts = model(input_ids, target_ids)
-            
-            # 1. Perda de Cross-Entropy (somente nos tokens que não são padding)
-            # logits: (B, target_seq_len, vocab_size)
-            # target_ids: (B, target_seq_len)
-            B, T, V = logits.shape
-            logits_flat = logits.view(-1, V)
-            targets_flat = target_ids.view(-1)
-            mask_flat = target_mask.view(-1)
-            
-            ce_loss_raw = criterion(logits_flat, targets_flat)
-            ce_loss = (ce_loss_raw * mask_flat).sum() / (mask_flat.sum() + 1e-8)
-            
-            # 2. Perda de PonderNet
-            if use_ponder and len(halts) > 0:
-                p_loss = compute_ponder_loss(halts, prior_prob=0.3)
-            else:
-                p_loss = torch.tensor(0.0, device=device)
+            # Forward pass com autocast
+            with torch.amp.autocast("cuda", enabled=(device_type == "cuda")):
+                logits, halts = model(input_ids, target_ids)
                 
-            # Perda Híbrida Combinada
-            loss = ce_loss + 0.1 * p_loss
+                # 1. Perda de Cross-Entropy (somente nos tokens que não são padding)
+                B, T, V = logits.shape
+                logits_flat = logits.view(-1, V)
+                targets_flat = target_ids.view(-1)
+                mask_flat = target_mask.view(-1)
+                
+                ce_loss_raw = criterion(logits_flat, targets_flat)
+                ce_loss = (ce_loss_raw * mask_flat).sum() / (mask_flat.sum() + 1e-8)
+                
+                # 2. Perda de Ponderação
+                if use_ponder and len(halts) > 0:
+                    p_loss = compute_ponder_loss(halts, prior_prob=0.3)
+                else:
+                    p_loss = torch.tensor(0.0, device=device)
+                    
+                # Perda Híbrida Combinada
+                loss = ce_loss + 0.1 * p_loss
             
-            loss.backward()
+            # Backward pass com GradScaler
+            scaler.scale(loss).backward()
+            scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            optimizer.step()
+            scaler.step(optimizer)
+            scaler.update()
             
             total_loss += loss.item()
             total_ce_loss += ce_loss.item()
             total_p_loss += p_loss.item()
             
+        scheduler.step()
+        
         # Avaliação de validação rápida (Acurácia Exata)
         val_acc, avg_steps = evaluate_accuracy(model, val_dataloader, tokenizer, device, use_ponder)
         
@@ -100,14 +111,35 @@ def train_model(model_name, model, dataloader, val_dataloader, tokenizer, epochs
               f"Val Acc: {val_acc:.2f}% | "
               f"Passos Médios: {avg_steps:.2f}")
         
-        if val_acc >= best_acc:
+        # Early stopping condicional
+        if val_acc > best_acc:
             best_acc = val_acc
+            epochs_no_improve = 0
             os.makedirs("checkpoints", exist_ok=True)
             torch.save(model.state_dict(), f"checkpoints/{model_name.lower().replace(' ', '_')}_best.pt")
+        else:
+            epochs_no_improve += 1
+            
+        # Contagem de épocas com acurácia de 100%
+        if val_acc >= 100.0:
+            stable_perfect_epochs += 1
+        else:
+            stable_perfect_epochs = 0
+            
+        # Parada se bater acurácia perfeita por 3 épocas consecutivas
+        if stable_perfect_epochs >= 3:
+            print(f"[Early Stopping] Acurácia de validação perfeita estável (100.00%) por 3 épocas. Parando.")
+            break
+            
+        # Parada se paciência esgotar
+        if epochs_no_improve >= patience:
+            print(f"[Early Stopping] Sem melhorias na validação por {patience} épocas. Parando.")
+            break
             
     # Sempre salvar o modelo final para garantir a existência de checkpoints
     os.makedirs("checkpoints", exist_ok=True)
-    torch.save(model.state_dict(), f"checkpoints/{model_name.lower().replace(' ', '_')}_best.pt")
+    if best_acc == 0.0:
+        torch.save(model.state_dict(), f"checkpoints/{model_name.lower().replace(' ', '_')}_best.pt")
             
     print(f"Treinamento finalizado. Melhor Acurácia de Validação: {best_acc:.2f}%")
     return best_acc

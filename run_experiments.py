@@ -12,7 +12,7 @@ from train_distill import train_distill_model
 from src.grpo_agent import train_grpo
 from train_contrastive_ebm import train_contrastive_ebm_model
 
-def get_dataloaders(num_digits, batch_size, tokenizer):
+def get_dataloaders(num_digits, batch_size, tokenizer, align_operator=False, max_d_align=None):
     # Gerar todas as combinações únicas de num_digits
     max_val = 10**num_digits - 1
     all_pairs = []
@@ -36,8 +36,8 @@ def get_dataloaders(num_digits, batch_size, tokenizer):
     train_samples = list(zip(train_inputs, train_targets))
     val_samples = list(zip(val_inputs, val_targets))
     
-    train_ds = AdditionDataset(num_digits=num_digits, tokenizer=tokenizer, samples=train_samples)
-    val_ds = AdditionDataset(num_digits=num_digits, tokenizer=tokenizer, samples=val_samples)
+    train_ds = AdditionDataset(num_digits=num_digits, tokenizer=tokenizer, samples=train_samples, align_operator=align_operator, max_d_align=max_d_align)
+    val_ds = AdditionDataset(num_digits=num_digits, tokenizer=tokenizer, samples=val_samples, align_operator=align_operator, max_d_align=max_d_align)
     
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True)
     val_loader = DataLoader(val_ds, batch_size=batch_size * 2, shuffle=False)
@@ -56,6 +56,8 @@ def main():
     parser.add_argument("--nhead", type=int, default=8, help="Número de cabeças de atenção.")
     parser.add_argument("--num_layers", type=int, default=2, help="Número de camadas de codificador/decodificador.")
     parser.add_argument("--use_rope", type=bool, default=True, help="Usar Rotary Position Embeddings.")
+    parser.add_argument("--align_operator", type=bool, default=False, help="Usar padding centralizado no operador.")
+    parser.add_argument("--max_d_align", type=int, default=4, help="Comprimento fixo de dígitos de alinhamento constante.")
     
     args = parser.parse_args()
     
@@ -64,7 +66,8 @@ def main():
     print(f"[INFO] Dispositivo: {device.type.upper()}")
     
     tokenizer = CharTokenizer()
-    train_loader, val_loader = get_dataloaders(args.num_digits, args.batch_size, tokenizer)
+    train_loader, val_loader = get_dataloaders(args.num_digits, args.batch_size, tokenizer, 
+                                               align_operator=args.align_operator, max_d_align=args.max_d_align)
     
     # Executar o experimento apropriado
     if args.experiment == "baseline":

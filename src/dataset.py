@@ -35,10 +35,11 @@ class AdditionDataset(Dataset):
     onde C = A + B.
     Suporta Curriculum Learning / comprimentos mistos se num_digits for uma lista/lista de inteiros.
     """
-    def __init__(self, num_digits=3, num_samples=10000, seed=42, tokenizer=None, samples=None, pad_left=True):
+    def __init__(self, num_digits=3, num_samples=10000, seed=42, tokenizer=None, samples=None, pad_left=True, align_operator=False, max_d_align=None):
         super().__init__()
         self.tokenizer = tokenizer or CharTokenizer()
         self.pad_left = pad_left
+        self.align_operator = align_operator
         
         if isinstance(num_digits, (list, tuple)):
             self.num_digits = list(num_digits)
@@ -47,9 +48,15 @@ class AdditionDataset(Dataset):
             self.num_digits = [num_digits]
             max_d = num_digits
             
-        # Comprimento máximo da entrada e do alvo para fins de padding
-        self.max_input_len = max_d * 2 + 2 # ex: "99+99=" -> 6 chars
-        self.max_target_len = max_d + 1    # ex: "198" -> 3 chars
+        self.max_d_align = max_d_align or max_d
+        
+        # Se align_operator for True, o comprimento da fita de entrada é sempre 2 * max_d_align + 2
+        if self.align_operator:
+            self.max_input_len = self.max_d_align * 2 + 2
+        else:
+            self.max_input_len = max_d * 2 + 2
+            
+        self.max_target_len = max_d + 1
         
         if samples is not None:
             self.samples = samples
@@ -123,8 +130,43 @@ class AdditionDataset(Dataset):
     def __getitem__(self, idx):
         input_str, target_str = self.samples[idx]
         
-        # Codificar caracteres
-        input_ids = self.tokenizer.encode(input_str)
+        if self.align_operator:
+            # Padding estruturado centralizado no operador
+            raw_in = input_str.replace(" ", "").replace("=", "")
+            parts = raw_in.split("+")
+            a_str = parts[0]
+            b_str = parts[1]
+            
+            # Criar fita de tamanho fixo
+            max_d = self.max_d_align
+            tape = [" "] * (max_d * 2 + 2)
+            
+            # 1. Operador + no índice max_d
+            tape[max_d] = "+"
+            
+            # 2. Operando A com pad esquerdo: posições de max_d - len(A) até max_d - 1
+            for i, char in enumerate(a_str):
+                tape[max_d - len(a_str) + i] = char
+                
+            # 3. Operando B com pad esquerdo: posições de max_d * 2 - len(B) + 1 até max_d * 2
+            start_b_idx = max_d * 2 - len(b_str) + 1
+            for i, char in enumerate(b_str):
+                tape[start_b_idx + i] = char
+                
+            # 4. Operador = no final da fita (índice max_d * 2 + 1)
+            tape[max_d * 2 + 1] = "="
+            
+            # Codificar a fita inteira
+            input_ids = [self.tokenizer.char_to_id[c] for c in tape]
+        else:
+            # Codificação clássica
+            input_ids = self.tokenizer.encode(input_str)
+            input_pad_len = self.max_input_len - len(input_ids)
+            if self.pad_left:
+                input_ids = [self.tokenizer.pad_id] * input_pad_len + input_ids
+            else:
+                input_ids = input_ids + [self.tokenizer.pad_id] * input_pad_len
+                
         target_ids = self.tokenizer.encode(target_str)
         
         # Extrair valores numéricos para gerar a cadeia de raciocínio passo a passo
@@ -144,17 +186,9 @@ class AdditionDataset(Dataset):
             cot_ids = cot_ids + [self.tokenizer.pad_id] * cot_pad_len
         else:
             cot_ids = cot_ids[:self.max_input_len]
-            
-        # Padding nas entradas (à esquerda para que o '=' fique alinhado antes do pensamento latente ou à direita)
-        input_pad_len = self.max_input_len - len(input_ids)
-        if self.pad_left:
-            input_ids = [self.tokenizer.pad_id] * input_pad_len + input_ids
-        else:
-            input_ids = input_ids + [self.tokenizer.pad_id] * input_pad_len
         
         # Padding nos alvos (à direita)
         target_pad_len = self.max_target_len - len(target_ids)
-        # Para treinamento autoregressivo, adicionamos padding ao target
         padded_target_ids = target_ids + [self.tokenizer.pad_id] * target_pad_len
         
         # Criar máscara para o loss incluir o primeiro padding (token EOS/stop)
@@ -172,19 +206,15 @@ class AdditionDataset(Dataset):
         }
 
 if __name__ == "__main__":
-    # Teste rápido
+    # Teste rápido de padding centralizado
     tok = CharTokenizer()
-    ds = AdditionDataset(num_digits=3, num_samples=5, tokenizer=tok)
+    ds = AdditionDataset(num_digits=2, num_samples=3, tokenizer=tok, align_operator=True, max_d_align=4)
     for i in range(len(ds)):
         item = ds[i]
         print(f"Sample {i}:")
         print("  Raw Input:  ", item["raw_input"])
         print("  Raw Target: ", item["raw_target"])
         print("  Encoded In: ", item["input_ids"])
-        print("  Encoded Out:", item["target_ids"])
-        print("  CoT IDs:    ", item["cot_ids"])
-        print("  Decoded CoT:", tok.decode(item["cot_ids"]))
+        print("  Decoded In: '", tok.decode(item["input_ids"]), "'")
         print("  Mask:       ", item["target_mask"])
-        print("  Decoded In: ", tok.decode(item["input_ids"]))
-        print("  Decoded Out:", tok.decode(item["target_ids"]))
         print("-" * 30)
