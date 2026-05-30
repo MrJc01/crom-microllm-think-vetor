@@ -1,6 +1,28 @@
+import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+class SinusoidalPositionalEncoding(nn.Module):
+    """
+    Injeta codificação posicional senoidal (Vaswani et al. 2017) que suporta
+    extrapolação e generalização OOD inerente para sequências mais longas.
+    """
+    def __init__(self, d_model, max_len=64):
+        super().__init__()
+        pe = torch.zeros(max_len, d_model)
+        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
+        
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        
+        pe = pe.unsqueeze(0) # (1, max_len, d_model)
+        self.register_buffer("pe", pe)
+
+    def forward(self, x):
+        # x: (batch_size, seq_len, d_model)
+        return x + self.pe[:, :x.size(1)].to(x.device)
 
 class LangevinHopfieldBlock(nn.Module):
     """
@@ -128,10 +150,10 @@ class ThinkVetorModel(nn.Module):
         # Camada de Embeddings compartilhado entre tokens de entrada e saída
         self.token_embeddings = nn.Embedding(vocab_size, d_model)
         
-        # Embeddings de posição learnable (suporta sequências de até 32 tokens)
+        # Embeddings de posição senoidais (suporta sequências e generaliza OOD)
         if self.use_pos_embedding:
-            self.pos_encoder = nn.Embedding(32, d_model)
-            self.pos_decoder = nn.Embedding(32, d_model)
+            self.pos_encoder = SinusoidalPositionalEncoding(d_model)
+            self.pos_decoder = SinusoidalPositionalEncoding(d_model)
         
         # Codificador inicial
         encoder_layer = nn.TransformerEncoderLayer(
@@ -169,9 +191,7 @@ class ThinkVetorModel(nn.Module):
         
         # Adiciona embeddings de posição no encoder
         if self.use_pos_embedding:
-            B_in, S_in = input_ids.shape
-            pos_in = torch.arange(S_in, device=input_ids.device).unsqueeze(0).expand(B_in, -1)
-            x_emb = x_emb + self.pos_encoder(pos_in)
+            x_emb = self.pos_encoder(x_emb)
         
         x_encoded = self.encoder(x_emb)
         
@@ -235,9 +255,7 @@ class ThinkVetorModel(nn.Module):
         
         # Adiciona embeddings de posição no decoder
         if self.use_pos_embedding:
-            B_tgt, S_tgt = shifted_target_ids.shape
-            pos_tgt = torch.arange(S_tgt, device=device).unsqueeze(0).expand(B_tgt, -1)
-            tgt_emb = tgt_emb + self.pos_decoder(pos_tgt)
+            tgt_emb = self.pos_decoder(tgt_emb)
         
         # Máscara causal para o decoder não olhar para o futuro
         tgt_seq_len = target_ids.shape[1]
@@ -269,9 +287,7 @@ class ThinkVetorModel(nn.Module):
             
             # Adiciona embeddings de posição no encoder (inferência)
             if self.use_pos_embedding:
-                B_in, S_in = input_ids.shape
-                pos_in = torch.arange(S_in, device=device).unsqueeze(0).expand(B_in, -1)
-                x_emb = x_emb + self.pos_encoder(pos_in)
+                x_emb = self.pos_encoder(x_emb)
             
             x_encoded = self.encoder(x_emb)
             
@@ -316,9 +332,7 @@ class ThinkVetorModel(nn.Module):
                 
                 # Adiciona embeddings de posição no decoder (inferência)
                 if self.use_pos_embedding:
-                    B_tgt, S_tgt = generated.shape
-                    pos_tgt = torch.arange(S_tgt, device=device).unsqueeze(0).expand(B_tgt, -1)
-                    tgt_emb = tgt_emb + self.pos_decoder(pos_tgt)
+                    tgt_emb = self.pos_decoder(tgt_emb)
                 
                 tgt_seq_len = generated.shape[1]
                 causal_mask = nn.Transformer.generate_square_subsequent_mask(tgt_seq_len, device=device)
