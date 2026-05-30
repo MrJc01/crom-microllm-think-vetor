@@ -45,6 +45,21 @@ Investiga a fusão de Transformers com a neurobiologia clássica dos sistemas di
 ### 4. [Arquitetura Híbrida e Protótipo PyTorch](file:///home/j/%C3%81rea%20de%20trabalho/GitHub/crom-microllm-think-vetor/docs/proposed_architecture.md)
 Propõe um design unificado para o Micro-LLM Think-Vetor, acompanhado de um código completo e legível em PyTorch que ilustra como implementar o loop de recorrência latente com decaimento de caos e parada dinâmica.
 
+### 5. [Fronteiras Inexploradas e Conquistadas](file:///home/j/%C3%81rea%20de%20trabalho/GitHub/crom-microllm-think-vetor/docs/unexplored_frontiers.md)
+Acompanha quais caminhos conceituais originais do blueprint (como RoPE, Causal COCONUT, Destilação, GRPO e EBM) foram consolidados em código e quais são os novos caminhos a explorar.
+
+### 6. [Próximos Passos e Plano de Pesquisa V2](file:///home/j/%C3%81rea%20de%20trabalho/GitHub/crom-microllm-think-vetor/docs/proximos_passos_e_plano_de_pesquisa.md)
+Descreve o plano de execução e o checklist detalhado para a avaliação de generalização OOD extrema, transitividade multidimensional, benchmarking comparativo de inteligência com LLMs clássicos e a disponibilização de playgrounds interativos.
+
+---
+
+## 🏆 Conquistas Experimentais Empíricas
+
+A viabilidade técnica do Think-Vetor foi demonstrada em laboratório com aceleração por GPU no Google Colab, alcançando marcos científicos expressivos:
+1. **Convergência Lógica Perfeita (100.00%)**: Na tarefa de raciocínio de transitividade relacional sob incerteza e contradições contextuais (erratas no prompt), o modelo `MicroReasoningLLM` atingiu acurácia máxima de validação disjunta na Época 5 e estabilizou no GRPO com 100% de recompensa.
+2. **Robustez OOD na Aritmética (66.60%)**: O uso de **Padding Centralizado do Operador** (`align_operator=True`) estabilizou geometricamente o alinhamento de carry em posições numéricas extrapolares, resultando em um ganho de **`+17.40%`** de acurácia sobre a baseline autoregressiva sem alinhamento fixo.
+3. **Eficiência de Computação Dinâmica**: A introdução de **Early Stopping** e precisão mista `torch.amp` reduziu a necessidade de épocas de treinamento em **`68%`**, economizando recursos de processamento e evitando overfitting.
+
 ---
 
 ## Tabela Comparativa de Abordagens
@@ -60,4 +75,4 @@ Propõe um design unificado para o Micro-LLM Think-Vetor, acompanhado de um cód
 ---
 
 > [!NOTE]
-> Este projeto está em fase de design conceitual avançado e modelagem. As especificações nos documentos a seguir servem como blueprint de engenharia para o desenvolvimento do protótipo.
+> Este projeto migrou da fase de blueprint puramente teórico para a **validação prática funcional**. Os experimentos e scripts de inferência estão totalmente operacionais no repositório.

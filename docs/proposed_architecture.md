@@ -2,6 +2,12 @@
 
 A arquitetura **Think-Vetor** unifica os conceitos de **Cadeia de Pensamento Contínua (Continuous CoT)**, **Tempo de Computação Adaptativo (PonderNet)** e **Redes de Hopfield Modernas com Ruído de Langevin**. Esta combinação resulta em um modelo híbrido bio-inspirado capaz de alocar computação de forma flexível e explorar o espaço latente de forma não-linear (caótica) antes de colapsar na resposta final textual.
 
+> [!NOTE]
+> A implementação real e otimizada desta arquitetura em PyTorch pode ser encontrada nos arquivos de produção do repositório:
+> * Modelo Base Think-Vetor: [src/model.py](file:///home/j/Área de trabalho/GitHub/crom-microllm-think-vetor/src/model.py)
+> * Topologia Causal COCONUT: [src/coconut_model.py](file:///home/j/Área de trabalho/GitHub/crom-microllm-think-vetor/src/coconut_model.py)
+> * Micro-LLM Lógica de Raciocínio: [src/logic_llm.py](file:///home/j/Área de trabalho/GitHub/crom-microllm-think-vetor/src/logic_llm.py)
+
 ---
 
 ## Estrutura da Arquitetura
