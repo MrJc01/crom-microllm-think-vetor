@@ -201,8 +201,8 @@ def run_inference(model, tokenizer, prompt, is_causal_coconut, device):
             print("-" * 50)
             
             # 2. Decodificação autoregressiva a partir do estado de reflexão acumulado
-            # Começa com '=' (ou o primeiro token do decoder)
-            tgt_ids = [tokenizer.char_to_id["="]] if hasattr(tokenizer, "char_to_id") else [tokenizer.encode("=")[0]]
+            # Começa com o token <sos> chumbado em 11 (usado em toda a arquitetura e treinamento do Think-Vetor)
+            tgt_ids = [11]
             
             for _ in range(15):
                 tgt_tensor = torch.tensor(tgt_ids, dtype=torch.long).unsqueeze(0).to(device)
@@ -224,7 +224,7 @@ def run_inference(model, tokenizer, prompt, is_causal_coconut, device):
                 tgt_ids.append(next_token)
                 
             # Decodificar e mostrar resposta
-            # Remove o '=' inicial se presente na decodificação
+            # Remove o token <sos> inicial (índice 0) na decodificação
             pred_str = tokenizer.decode(tgt_ids[1:]).strip()
             print(f"SAÍDA DO MODELO: {pred_str}")
             
