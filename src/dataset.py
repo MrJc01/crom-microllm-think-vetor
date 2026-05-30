@@ -20,7 +20,13 @@ class CharTokenizer:
     def decode(self, ids):
         if isinstance(ids, torch.Tensor):
             ids = ids.tolist()
-        return "".join([self.id_to_char[idx] for idx in ids if idx in self.id_to_char])
+        decoded_chars = []
+        for idx in ids:
+            if idx == self.pad_id:
+                break
+            if idx in self.id_to_char:
+                decoded_chars.append(self.id_to_char[idx])
+        return "".join(decoded_chars)
 
 class AdditionDataset(Dataset):
     """
@@ -89,8 +95,10 @@ class AdditionDataset(Dataset):
         # Para treinamento autoregressivo, adicionamos padding ao target
         padded_target_ids = target_ids + [self.tokenizer.pad_id] * target_pad_len
         
-        # Criar máscara para o loss não calcular o padding no target
-        target_mask = [1] * len(target_ids) + [0] * target_pad_len
+        # Criar máscara para o loss incluir o primeiro padding (token EOS/stop)
+        # O modelo precisa aprender a produzir o token de parada após os dígitos da resposta
+        target_mask = [1] * min(len(target_ids) + 1, self.max_target_len)
+        target_mask = target_mask + [0] * (self.max_target_len - len(target_mask))
         
         return {
             "input_ids": torch.tensor(input_ids, dtype=torch.long),
