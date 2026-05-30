@@ -33,15 +33,23 @@ class AdditionDataset(Dataset):
     Dataset sintético de adição.
     Gera strings no formato 'A+B=' como entrada e 'C' como resposta,
     onde C = A + B.
+    Suporta Curriculum Learning / comprimentos mistos se num_digits for uma lista/lista de inteiros.
     """
-    def __init__(self, num_digits=3, num_samples=10000, seed=42, tokenizer=None, samples=None):
+    def __init__(self, num_digits=3, num_samples=10000, seed=42, tokenizer=None, samples=None, pad_left=True):
         super().__init__()
-        self.num_digits = num_digits
         self.tokenizer = tokenizer or CharTokenizer()
+        self.pad_left = pad_left
         
+        if isinstance(num_digits, (list, tuple)):
+            self.num_digits = list(num_digits)
+            max_d = max(self.num_digits)
+        else:
+            self.num_digits = [num_digits]
+            max_d = num_digits
+            
         # Comprimento máximo da entrada e do alvo para fins de padding
-        self.max_input_len = num_digits * 2 + 2 # ex: "99+99=" -> 6 chars
-        self.max_target_len = num_digits + 1    # ex: "198" -> 3 chars
+        self.max_input_len = max_d * 2 + 2 # ex: "99+99=" -> 6 chars
+        self.max_target_len = max_d + 1    # ex: "198" -> 3 chars
         
         if samples is not None:
             self.samples = samples
@@ -51,11 +59,8 @@ class AdditionDataset(Dataset):
         random.seed(seed)
         self.samples = []
         
-        # Determinar limite superior dos números baseado em num_digits
-        max_val = 10**num_digits - 1
-        
         # Evitar loop infinito se num_samples for maior do que o espaço total de combinações únicas
-        max_possible = (10**num_digits) ** 2
+        max_possible = (10**max_d) ** 2
         if num_samples > max_possible:
             num_samples = max_possible
         self.num_samples = num_samples
@@ -63,8 +68,13 @@ class AdditionDataset(Dataset):
         # Gerar amostras únicas
         seen = set()
         while len(self.samples) < num_samples:
-            a = random.randint(0, max_val)
-            b = random.randint(0, max_val)
+            # Escolher aleatoriamente número de dígitos para cada operando
+            d_a = random.choice(self.num_digits)
+            d_b = random.choice(self.num_digits)
+            
+            a = random.randint(0, 10**d_a - 1)
+            b = random.randint(0, 10**d_b - 1)
+            
             if (a, b) not in seen:
                 seen.add((a, b))
                 
@@ -86,9 +96,12 @@ class AdditionDataset(Dataset):
         input_ids = self.tokenizer.encode(input_str)
         target_ids = self.tokenizer.encode(target_str)
         
-        # Padding nas entradas (à esquerda para que o '=' fique alinhado antes do pensamento latente)
+        # Padding nas entradas (à esquerda para que o '=' fique alinhado antes do pensamento latente ou à direita)
         input_pad_len = self.max_input_len - len(input_ids)
-        input_ids = [self.tokenizer.pad_id] * input_pad_len + input_ids
+        if self.pad_left:
+            input_ids = [self.tokenizer.pad_id] * input_pad_len + input_ids
+        else:
+            input_ids = input_ids + [self.tokenizer.pad_id] * input_pad_len
         
         # Padding nos alvos (à direita)
         target_pad_len = self.max_target_len - len(target_ids)

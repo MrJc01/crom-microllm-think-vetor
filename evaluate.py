@@ -1,6 +1,7 @@
 import os
 import torch
 import numpy as np
+import argparse
 
 from src.dataset import CharTokenizer, AdditionDataset
 from src.model import ThinkVetorModel
@@ -78,6 +79,13 @@ def run_evaluation():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     tokenizer = CharTokenizer()
     
+    # Argument parsing
+    parser = argparse.ArgumentParser(description="Avaliação dos modelos Think-Vetor e Baseline.")
+    parser.add_argument("--use_rope", action="store_true", help="Usar Rotary Position Embeddings (RoPE) em vez de senoidais absolutos.")
+    parser.add_argument("--baseline_path", type=str, default="checkpoints/baseline_model_best.pt", help="Caminho para os pesos do Baseline.")
+    parser.add_argument("--think_vetor_path", type=str, default="checkpoints/think_vetor_best.pt", help="Caminho para os pesos do Think-Vetor.")
+    args = parser.parse_args()
+    
     # 1. Carregar modelos
     print("\n=== Instanciando Modelos ===")
     
@@ -88,7 +96,8 @@ def run_evaluation():
         num_encoder_layers=2,
         num_decoder_layers=2,
         max_ponder_steps=0,
-        use_pos_embedding=True
+        use_pos_embedding=not args.use_rope,
+        use_rope=args.use_rope
     ).to(device)
     
     think_vetor = ThinkVetorModel(
@@ -100,12 +109,13 @@ def run_evaluation():
         max_ponder_steps=6,
         num_memories=512,
         beta=8.0,
-        use_pos_embedding=True
+        use_pos_embedding=not args.use_rope,
+        use_rope=args.use_rope
     ).to(device)
     
     # Tentar carregar pesos salvos
-    baseline_path = "checkpoints/baseline_model_best.pt"
-    think_vetor_path = "checkpoints/think_vetor_best.pt"
+    baseline_path = args.baseline_path
+    think_vetor_path = args.think_vetor_path
     
     if os.path.exists(baseline_path):
         try:

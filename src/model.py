@@ -24,6 +24,42 @@ class SinusoidalPositionalEncoding(nn.Module):
         # x: (batch_size, seq_len, d_model)
         return x + self.pe[:, :x.size(1)].to(x.device)
 
+class RotaryPositionEmbedding(nn.Module):
+    """
+    Rotary Position Embedding (RoPE) que aplica rotações angulares em pares de coordenadas.
+    Permite generalização e extrapolação para comprimentos de contexto arbitrários.
+    """
+    def __init__(self, dim, theta=10000.0):
+        super().__init__()
+        self.dim = dim
+        self.theta = theta
+        inv_freq = 1.0 / (theta ** (torch.arange(0, dim, 2).float() / dim))
+        self.register_buffer("inv_freq", inv_freq)
+        self.cos_cached = None
+        self.sin_cached = None
+
+    def _update_cache(self, max_seq_len, device):
+        t = torch.arange(max_seq_len, dtype=torch.float, device=device)
+        freqs = torch.outer(t, self.inv_freq)
+        emb = torch.cat((freqs, freqs), dim=-1)
+        self.cos_cached = emb.cos().unsqueeze(0).unsqueeze(1) # (1, 1, max_seq_len, head_dim)
+        self.sin_cached = emb.sin().unsqueeze(0).unsqueeze(1) # (1, 1, max_seq_len, head_dim)
+
+    def _rotate_half(self, x):
+        x1 = x[..., :self.dim // 2]
+        x2 = x[..., self.dim // 2:]
+        return torch.cat((-x2, x1), dim=-1)
+
+    def forward(self, x):
+        # x: (B, nhead, S, head_dim)
+        S = x.shape[2]
+        if self.cos_cached is None or S > self.cos_cached.shape[2] or self.cos_cached.device != x.device:
+            self._update_cache(max(S, 2 * (self.cos_cached.shape[2] if self.cos_cached is not None else 128)), x.device)
+            
+        cos = self.cos_cached[:, :, :S, :].to(x.device)
+        sin = self.sin_cached[:, :, :S, :].to(x.device)
+        return (x * cos) + (self._rotate_half(x) * sin)
+
 class LangevinHopfieldBlock(nn.Module):
     """
     Minimização de energia no espaço latente utilizando Dinâmica de Langevin.
@@ -66,7 +102,8 @@ class LangevinHopfieldBlock(nn.Module):
 
 class MultiHeadAttentionWithTemperature(nn.Module):
     """
-    Auto-Atenção Multi-Head que suporta fator de escala de temperatura variável.
+    Auto-Atenção Multi-Head que suporta fator de escala de temperatura variável,
+    uso de máscara causal e injeção opcional de Rotary Position Embedding (RoPE).
     """
     def __init__(self, d_model, nhead):
         super().__init__()
@@ -80,19 +117,32 @@ class MultiHeadAttentionWithTemperature(nn.Module):
         self.v_proj = nn.Linear(d_model, d_model)
         self.out_proj = nn.Linear(d_model, d_model)
 
-    def forward(self, x, temp=1.0):
+    def forward(self, x, kv=None, temp=1.0, attn_mask=None, rope=None):
         # x: (B, S, d_model)
+        # kv: (B, S_kv, d_model) - opcional para cross-attention
         B, S, C = x.shape
+        if kv is None:
+            kv = x
+        S_kv = kv.shape[1]
         
         # 1. Obter Q, K, V e remodelar para multi-head
-        # (B, S, d_model) -> (B, S, nhead, head_dim) -> (B, nhead, S, head_dim)
         q = self.q_proj(x).view(B, S, self.nhead, self.head_dim).transpose(1, 2)
-        k = self.k_proj(x).view(B, S, self.nhead, self.head_dim).transpose(1, 2)
-        v = self.v_proj(x).view(B, S, self.nhead, self.head_dim).transpose(1, 2)
+        k = self.k_proj(kv).view(B, S_kv, self.nhead, self.head_dim).transpose(1, 2)
+        v = self.v_proj(kv).view(B, S_kv, self.nhead, self.head_dim).transpose(1, 2)
+        
+        # Aplicar RoPE se fornecido
+        if rope is not None:
+            q = rope(q)
+            if kv is x:
+                k = rope(k)
         
         # 2. Calcular scores de atenção: Q @ K^T / (sqrt(head_dim) * temp)
         scale = (self.head_dim ** -0.5) / max(temp, 1e-6)
         scores = torch.matmul(q, k.transpose(-2, -1)) * scale
+        
+        # Aplicar máscara se fornecida
+        if attn_mask is not None:
+            scores = scores + attn_mask
         
         # 3. Aplicar Softmax
         attn_weights = F.softmax(scores, dim=-1)
@@ -104,6 +154,85 @@ class MultiHeadAttentionWithTemperature(nn.Module):
         context = context.transpose(1, 2).contiguous().view(B, S, C)
         
         return self.out_proj(context)
+
+class CustomTransformerEncoderLayer(nn.Module):
+    """
+    Camada customizada de codificador que suporta injeção de RoPE nos Query/Key.
+    """
+    def __init__(self, d_model, nhead):
+        super().__init__()
+        self.self_attn = MultiHeadAttentionWithTemperature(d_model, nhead)
+        self.linear1 = nn.Linear(d_model, d_model * 4)
+        self.linear2 = nn.Linear(d_model * 4, d_model)
+        self.norm1 = nn.LayerNorm(d_model)
+        self.norm2 = nn.LayerNorm(d_model)
+        
+    def forward(self, x, rope=None):
+        x_norm = self.norm1(x)
+        attn_out = self.self_attn(x_norm, rope=rope)
+        x = x + attn_out
+        
+        x_norm = self.norm2(x)
+        ff_out = self.linear2(F.relu(self.linear1(x_norm)))
+        x = x + ff_out
+        return x
+
+class CustomTransformerEncoder(nn.Module):
+    """
+    Codificador customizado composto de múltiplas camadas CustomTransformerEncoderLayer.
+    """
+    def __init__(self, d_model, nhead, num_layers):
+        super().__init__()
+        self.layers = nn.ModuleList([CustomTransformerEncoderLayer(d_model, nhead) for _ in range(num_layers)])
+        
+    def forward(self, x, rope=None):
+        for layer in self.layers:
+            x = layer(x, rope=rope)
+        return x
+
+class CustomTransformerDecoderLayer(nn.Module):
+    """
+    Camada customizada de decodificador que suporta injeção de RoPE na auto-atenção.
+    """
+    def __init__(self, d_model, nhead):
+        super().__init__()
+        self.self_attn = MultiHeadAttentionWithTemperature(d_model, nhead)
+        self.multihead_attn = MultiHeadAttentionWithTemperature(d_model, nhead)
+        self.linear1 = nn.Linear(d_model, d_model * 4)
+        self.linear2 = nn.Linear(d_model * 4, d_model)
+        self.norm1 = nn.LayerNorm(d_model)
+        self.norm2 = nn.LayerNorm(d_model)
+        self.norm3 = nn.LayerNorm(d_model)
+        
+    def forward(self, tgt, memory, tgt_mask=None, rope=None):
+        # Auto-atenção com máscara causal
+        tgt_norm = self.norm1(tgt)
+        attn_out = self.self_attn(tgt_norm, attn_mask=tgt_mask, rope=rope)
+        tgt = tgt + attn_out
+        
+        # Atenção cruzada (Key/Value vêm da memória do codificador)
+        tgt_norm = self.norm2(tgt)
+        attn_out2 = self.multihead_attn(tgt_norm, kv=memory)
+        tgt = tgt + attn_out2
+        
+        # FFN
+        tgt_norm = self.norm3(tgt)
+        ff_out = self.linear2(F.relu(self.linear1(tgt_norm)))
+        tgt = tgt + ff_out
+        return tgt
+
+class CustomTransformerDecoder(nn.Module):
+    """
+    Decodificador customizado composto de múltiplas camadas CustomTransformerDecoderLayer.
+    """
+    def __init__(self, d_model, nhead, num_layers):
+        super().__init__()
+        self.layers = nn.ModuleList([CustomTransformerDecoderLayer(d_model, nhead) for _ in range(num_layers)])
+        
+    def forward(self, tgt, memory, tgt_mask=None, rope=None):
+        for layer in self.layers:
+            tgt = layer(tgt, memory, tgt_mask=tgt_mask, rope=rope)
+        return tgt
 
 class RecurrentTransformerLayer(nn.Module):
     """
@@ -118,10 +247,10 @@ class RecurrentTransformerLayer(nn.Module):
         self.norm1 = nn.LayerNorm(d_model)
         self.norm2 = nn.LayerNorm(d_model)
         
-    def forward(self, x, temp=1.0):
+    def forward(self, x, temp=1.0, rope=None):
         # Subcamada 1: Atenção com temperatura + residual
         x_norm = self.norm1(x)
-        attn_out = self.self_attn(x_norm, temp=temp)
+        attn_out = self.self_attn(x_norm, temp=temp, rope=rope)
         x = x + attn_out
         
         # Subcamada 2: FeedForward + residual
@@ -140,26 +269,41 @@ class ThinkVetorModel(nn.Module):
     """
     def __init__(self, vocab_size, d_model=128, nhead=4, num_encoder_layers=2, 
                  num_decoder_layers=2, max_ponder_steps=6, num_memories=512, beta=8.0,
-                 use_pos_embedding=False):
+                 use_pos_embedding=False, use_rope=False):
         super().__init__()
         self.d_model = d_model
         self.max_ponder_steps = max_ponder_steps
         self.vocab_size = vocab_size
         self.use_pos_embedding = use_pos_embedding
+        self.use_rope = use_rope
         
         # Camada de Embeddings compartilhado entre tokens de entrada e saída
         self.token_embeddings = nn.Embedding(vocab_size, d_model)
         
-        # Embeddings de posição senoidais (suporta sequências e generaliza OOD)
+        # Injeção de Posição
         if self.use_pos_embedding:
             self.pos_encoder = SinusoidalPositionalEncoding(d_model)
             self.pos_decoder = SinusoidalPositionalEncoding(d_model)
         
-        # Codificador inicial
-        encoder_layer = nn.TransformerEncoderLayer(
-            d_model=d_model, nhead=nhead, dim_feedforward=d_model * 4, batch_first=True
-        )
-        self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_encoder_layers)
+        if self.use_rope:
+            self.rope = RotaryPositionEmbedding(dim=d_model // nhead)
+            # Codificador inicial customizado
+            self.encoder = CustomTransformerEncoder(d_model=d_model, nhead=nhead, num_layers=num_encoder_layers)
+            # Decodificador final customizado
+            self.decoder = CustomTransformerDecoder(d_model=d_model, nhead=nhead, num_layers=num_decoder_layers)
+        else:
+            self.rope = None
+            # Codificador inicial padrão (compatibilidade com checkpoints existentes)
+            encoder_layer = nn.TransformerEncoderLayer(
+                d_model=d_model, nhead=nhead, dim_feedforward=d_model * 4, batch_first=True
+            )
+            self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_encoder_layers)
+            
+            # Decodificador final padrão
+            decoder_layer = nn.TransformerDecoderLayer(
+                d_model=d_model, nhead=nhead, dim_feedforward=d_model * 4, batch_first=True
+            )
+            self.decoder = nn.TransformerDecoder(decoder_layer, num_layers=num_decoder_layers)
         
         # Camada recorrente para loop de reflexão com suporte a temperatura
         self.recurrent_layer = RecurrentTransformerLayer(d_model=d_model, nhead=nhead)
@@ -170,12 +314,6 @@ class ThinkVetorModel(nn.Module):
             self.hopfield_ebm = LangevinHopfieldBlock(d_model=d_model, num_memories=num_memories, beta=beta)
             # Classificador para probabilidade de parada (PonderNet)
             self.halt_classifier = nn.Linear(d_model, 1)
-        
-        # Decodificador final
-        decoder_layer = nn.TransformerDecoderLayer(
-            d_model=d_model, nhead=nhead, dim_feedforward=d_model * 4, batch_first=True
-        )
-        self.decoder = nn.TransformerDecoder(decoder_layer, num_layers=num_decoder_layers)
         
         # Cabeçalho de projeção linear para vocabulário
         self.lm_head = nn.Linear(d_model, vocab_size)
@@ -189,11 +327,14 @@ class ThinkVetorModel(nn.Module):
         # 1. Embeddings e codificação inicial
         x_emb = self.token_embeddings(input_ids)
         
-        # Adiciona embeddings de posição no encoder
+        # Adiciona embeddings de posição absolutos se configurado
         if self.use_pos_embedding:
             x_emb = self.pos_encoder(x_emb)
         
-        x_encoded = self.encoder(x_emb)
+        if self.use_rope:
+            x_encoded = self.encoder(x_emb, rope=self.rope)
+        else:
+            x_encoded = self.encoder(x_emb)
         
         batch_size, seq_len, d_model = x_encoded.shape
         device = x_encoded.device
@@ -218,8 +359,11 @@ class ThinkVetorModel(nn.Module):
                 else:
                     attn_temp = 1.0
                     
-                # Executa um ciclo da atenção recorrente com temperatura
-                next_state = self.recurrent_layer(state_with_time, temp=attn_temp)
+                # Executa um ciclo da atenção recorrente com temperatura e RoPE
+                if self.use_rope:
+                    next_state = self.recurrent_layer(state_with_time, temp=attn_temp, rope=self.rope)
+                else:
+                    next_state = self.recurrent_layer(state_with_time, temp=attn_temp)
                 
                 # Aplica decaimento térmico de Langevin no atretor de Hopfield
                 temp = init_temp * (0.5 ** k) # resfriamento
@@ -253,7 +397,7 @@ class ThinkVetorModel(nn.Module):
         shifted_target_ids = torch.cat([sos_token, target_ids[:, :-1]], dim=1)
         tgt_emb = self.token_embeddings(shifted_target_ids)
         
-        # Adiciona embeddings de posição no decoder
+        # Adiciona embeddings de posição absolutos se configurado
         if self.use_pos_embedding:
             tgt_emb = self.pos_decoder(tgt_emb)
         
@@ -262,7 +406,10 @@ class ThinkVetorModel(nn.Module):
         causal_mask = nn.Transformer.generate_square_subsequent_mask(tgt_seq_len, device=device)
         
         # Decoder cruza atenção com os estados ocultos ponderados (pooled_states)
-        decoded = self.decoder(tgt_emb, pooled_states, tgt_mask=causal_mask)
+        if self.use_rope:
+            decoded = self.decoder(tgt_emb, pooled_states, tgt_mask=causal_mask, rope=self.rope)
+        else:
+            decoded = self.decoder(tgt_emb, pooled_states, tgt_mask=causal_mask)
         
         # Mapeia de volta para o tamanho do vocabulário
         logits = self.lm_head(decoded)
@@ -285,11 +432,14 @@ class ThinkVetorModel(nn.Module):
             # 1. Encodificação inicial
             x_emb = self.token_embeddings(input_ids)
             
-            # Adiciona embeddings de posição no encoder (inferência)
+            # Adiciona embeddings de posição absolutos se configurado
             if self.use_pos_embedding:
                 x_emb = self.pos_encoder(x_emb)
             
-            x_encoded = self.encoder(x_emb)
+            if self.use_rope:
+                x_encoded = self.encoder(x_emb, rope=self.rope)
+            else:
+                x_encoded = self.encoder(x_emb)
             
             # 2. Ponderação Latente
             pooled_states = torch.zeros_like(x_encoded)
@@ -308,7 +458,10 @@ class ThinkVetorModel(nn.Module):
                     else:
                         attn_temp = 1.0
                         
-                    next_state = self.recurrent_layer(state_with_time, temp=attn_temp)
+                    if self.use_rope:
+                        next_state = self.recurrent_layer(state_with_time, temp=attn_temp, rope=self.rope)
+                    else:
+                        next_state = self.recurrent_layer(state_with_time, temp=attn_temp)
                     next_state = self.hopfield_ebm(next_state, temp=init_temp, lr=0.1)
                     
                     halt_prob = torch.sigmoid(self.halt_classifier(next_state))
@@ -330,14 +483,17 @@ class ThinkVetorModel(nn.Module):
             for _ in range(max_length):
                 tgt_emb = self.token_embeddings(generated)
                 
-                # Adiciona embeddings de posição no decoder (inferência)
+                # Adiciona embeddings de posição absolutos se configurado
                 if self.use_pos_embedding:
                     tgt_emb = self.pos_decoder(tgt_emb)
                 
                 tgt_seq_len = generated.shape[1]
                 causal_mask = nn.Transformer.generate_square_subsequent_mask(tgt_seq_len, device=device)
                 
-                decoded = self.decoder(tgt_emb, pooled_states, tgt_mask=causal_mask)
+                if self.use_rope:
+                    decoded = self.decoder(tgt_emb, pooled_states, tgt_mask=causal_mask, rope=self.rope)
+                else:
+                    decoded = self.decoder(tgt_emb, pooled_states, tgt_mask=causal_mask)
                 logits = self.lm_head(decoded[:, -1, :])
                 
                 if temperature == 0.0:
@@ -352,15 +508,25 @@ class ThinkVetorModel(nn.Module):
             return generated[:, 1:]
 
 if __name__ == "__main__":
-    # Teste de integridade de dimensões
-    model = ThinkVetorModel(vocab_size=13, d_model=64, nhead=2, max_ponder_steps=4)
+    # Teste de integridade de dimensões (sem RoPE)
+    print("Testando modelo padrão sem RoPE...")
+    model_std = ThinkVetorModel(vocab_size=13, d_model=64, nhead=2, max_ponder_steps=4, use_pos_embedding=True)
     x = torch.randint(0, 13, (2, 8)) # batch=2, seq=8
     y = torch.randint(0, 13, (2, 4)) # batch=2, seq=4
-    logits, halts = model(x, y)
-    print("Logits shape:   ", logits.shape) # Esperado: (2, 4, 13)
-    print("Número de halts:", len(halts))   # Esperado: 4 (max_ponder_steps)
-    print("Formato do halt: ", halts[0].shape) # Esperado: (2, 8, 1)
+    logits, halts = model_std(x, y)
+    print("Sem RoPE -> Logits shape:   ", logits.shape) # Esperado: (2, 4, 13)
+    print("Sem RoPE -> Número de halts:", len(halts))   # Esperado: 4 (max_ponder_steps)
     
-    # Teste de geração
-    gen = model.generate(x, max_length=4, temperature=0.0)
-    print("Gerado shape:   ", gen.shape) # Esperado: (2, 4)
+    gen = model_std.generate(x, max_length=4, temperature=0.0)
+    print("Sem RoPE -> Gerado shape:   ", gen.shape) # Esperado: (2, 4)
+    
+    # Teste de integridade de dimensões (com RoPE)
+    print("\nTestando modelo com RoPE...")
+    model_rope = ThinkVetorModel(vocab_size=13, d_model=64, nhead=2, max_ponder_steps=4, use_rope=True)
+    logits, halts = model_rope(x, y)
+    print("Com RoPE -> Logits shape:   ", logits.shape) # Esperado: (2, 4, 13)
+    print("Com RoPE -> Número de halts:", len(halts))   # Esperado: 4
+    
+    gen = model_rope.generate(x, max_length=4, temperature=0.0)
+    print("Com RoPE -> Gerado shape:   ", gen.shape) # Esperado: (2, 4)
+    print("\nTodos os testes de dimensão passaram com sucesso!")

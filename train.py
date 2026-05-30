@@ -197,7 +197,7 @@ def main():
     train_loader = DataLoader(train_ds, batch_size=64, shuffle=True)
     val_loader = DataLoader(val_ds, batch_size=128, shuffle=False)
     
-    # 2. Configurar Modelo Baseline (Sem Ponderação)
+    # 2. Configurar Modelo Baseline (Sem Ponderação, com RoPE)
     baseline_model = ThinkVetorModel(
         vocab_size=tokenizer.vocab_size,
         d_model=64,
@@ -205,10 +205,11 @@ def main():
         num_encoder_layers=1,
         num_decoder_layers=1,
         max_ponder_steps=0, # Desativa ponderação latente
-        use_pos_embedding=True
+        use_pos_embedding=False,
+        use_rope=True
     )
     
-    # 3. Configurar Modelo Think-Vetor (Com Ponderação Latente e Langevin)
+    # 3. Configurar Modelo Think-Vetor (Com Ponderação Latente, Langevin e RoPE)
     think_vetor = ThinkVetorModel(
         vocab_size=tokenizer.vocab_size,
         d_model=64,
@@ -218,7 +219,8 @@ def main():
         max_ponder_steps=6, # 6 passos de reflexão no máximo
         num_memories=128,
         beta=8.0,
-        use_pos_embedding=True
+        use_pos_embedding=False,
+        use_rope=True
     )
     
     # 4. Treinar ambos os modelos
