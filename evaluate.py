@@ -87,7 +87,8 @@ def run_evaluation():
         nhead=8,
         num_encoder_layers=2,
         num_decoder_layers=2,
-        max_ponder_steps=0
+        max_ponder_steps=0,
+        use_pos_embedding=True
     ).to(device)
     
     think_vetor = ThinkVetorModel(
@@ -98,7 +99,8 @@ def run_evaluation():
         num_decoder_layers=2,
         max_ponder_steps=6,
         num_memories=512,
-        beta=8.0
+        beta=8.0,
+        use_pos_embedding=True
     ).to(device)
     
     # Tentar carregar pesos salvos
