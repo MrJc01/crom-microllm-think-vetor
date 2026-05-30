@@ -37,7 +37,11 @@ class AdditionDataset(Dataset):
     """
     def __init__(self, num_digits=3, num_samples=10000, seed=42, tokenizer=None, samples=None, pad_left=True, align_operator=False, max_d_align=None):
         super().__init__()
-        self.tokenizer = tokenizer or CharTokenizer()
+        if isinstance(tokenizer, str):
+            from src.hf_tokenizer_wrapper import HFTokenizerWrapper
+            self.tokenizer = HFTokenizerWrapper(tokenizer)
+        else:
+            self.tokenizer = tokenizer or CharTokenizer()
         self.pad_left = pad_left
         self.align_operator = align_operator
         

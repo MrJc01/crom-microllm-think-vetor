@@ -11,6 +11,7 @@ from train import train_model
 from train_distill import train_distill_model
 from src.grpo_agent import train_grpo
 from train_contrastive_ebm import train_contrastive_ebm_model
+from train_hybrid import train_hybrid_model
 
 def get_dataloaders(num_digits, batch_size, tokenizer, align_operator=False, max_d_align=None):
     # Gerar todas as combinações únicas de num_digits
@@ -47,7 +48,7 @@ def get_dataloaders(num_digits, batch_size, tokenizer, align_operator=False, max
 def main():
     parser = argparse.ArgumentParser(description="Script mestre para rodar experimentos Think-Vetor no Google Colab ou Localmente.")
     parser.add_argument("--experiment", type=str, required=True, 
-                        choices=["baseline", "think_vetor", "coconut", "distill", "grpo", "ebm"],
+                        choices=["baseline", "think_vetor", "coconut", "distill", "grpo", "ebm", "hybrid"],
                         help="Topologia ou algoritmo de treino a ser executado.")
     parser.add_argument("--epochs", type=int, default=80, help="Número de épocas de treinamento.")
     parser.add_argument("--batch_size", type=int, default=128, help="Tamanho do lote (batch size).")
@@ -58,6 +59,7 @@ def main():
     parser.add_argument("--use_rope", type=bool, default=True, help="Usar Rotary Position Embeddings.")
     parser.add_argument("--align_operator", type=bool, default=False, help="Usar padding centralizado no operador.")
     parser.add_argument("--max_d_align", type=int, default=4, help="Comprimento fixo de dígitos de alinhamento constante.")
+    parser.add_argument("--switch_epoch", type=int, default=20, help="Época para transicionar de Destilação para GRPO no experimento híbrido.")
     
     args = parser.parse_args()
     
@@ -161,6 +163,22 @@ def main():
         )
         train_contrastive_ebm_model(model, train_loader, val_loader, tokenizer, 
                                     epochs=args.epochs, device=device)
+
+    elif args.experiment == "hybrid":
+        model = ThinkVetorModel(
+            vocab_size=tokenizer.vocab_size,
+            d_model=args.d_model,
+            nhead=args.nhead,
+            num_encoder_layers=args.num_layers,
+            num_decoder_layers=args.num_layers,
+            max_ponder_steps=6,
+            num_memories=512,
+            beta=8.0,
+            use_pos_embedding=not args.use_rope,
+            use_rope=args.use_rope
+        )
+        train_hybrid_model(model, train_loader, val_loader, tokenizer, 
+                           total_epochs=args.epochs, switch_epoch=args.switch_epoch, device=device)
 
 if __name__ == "__main__":
     main()

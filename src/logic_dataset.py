@@ -36,11 +36,16 @@ class LogicDataset(Dataset):
     Ex: "Alice is taller than Bob. Bob is taller than Charlie. Who is taller, Alice or Charlie?=" -> "Alice"
     Cadeia de raciocínio contínua (CoT): "Alice>Bob Bob>Charlie Alice>Charlie"
     """
-    def __init__(self, num_samples=1000, seed=42, tokenizer=None, max_input_len=90, max_target_len=15):
+    def __init__(self, num_samples=1000, seed=42, tokenizer=None, max_input_len=90, max_target_len=15, mutable_context=False):
         super().__init__()
-        self.tokenizer = tokenizer or LogicCharTokenizer()
+        if isinstance(tokenizer, str):
+            from src.hf_tokenizer_wrapper import HFTokenizerWrapper
+            self.tokenizer = HFTokenizerWrapper(tokenizer)
+        else:
+            self.tokenizer = tokenizer or LogicCharTokenizer()
         self.max_input_len = max_input_len
         self.max_target_len = max_target_len
+        self.mutable_context = mutable_context
         
         random.seed(seed)
         self.samples = []
@@ -55,21 +60,19 @@ class LogicDataset(Dataset):
         ]
         
         for _ in range(num_samples):
-            # Escolher 3 nomes distintos: X, Y, Z (de forma que X > Y > Z na ordem lógica)
+            # Escolher 3 nomes distintos: X, Y, Z (na ordem lógica provisória X > Y > Z)
             selected_names = random.sample(names, 3)
             x, y, z = selected_names[0], selected_names[1], selected_names[2]
             
             # Relação lógica
             rel = random.choice(relations)
             
-            # Gerar sentenças para X > Y e Y > Z com variação de voz
-            # X > Y
+            # Sentenças provisórias estabelecendo X > Y e Y > Z
             if random.random() > 0.5:
                 s1 = f"{x} is {rel['positive']} than {y}."
             else:
                 s1 = f"{y} is {rel['negative']} than {x}."
                 
-            # Y > Z
             if random.random() > 0.5:
                 s2 = f"{y} is {rel['positive']} than {z}."
             else:
@@ -77,21 +80,49 @@ class LogicDataset(Dataset):
                 
             context = f"{s1} {s2}"
             
-            # Decidir a pergunta sobre o relacionamento entre X e Z
-            if random.random() > 0.5:
-                # Pergunta sobre o maior (X)
-                question = f"Who is {rel['positive']}, {x} or {z}?="
-                answer = x
+            # Verificar se aplicamos errata de correção no contexto
+            apply_errata = self.mutable_context and (random.random() < 0.4)
+            
+            if apply_errata:
+                errata_type = random.choice(["invert_first", "invert_second"])
+                if errata_type == "invert_first":
+                    # Inverte X > Y para Y > X. Ordem final: Y > X > Z.
+                    errata_phrase = f"Wait, {x} is {rel['negative']} than {y}."
+                    context = f"{context} {errata_phrase}"
+                    
+                    # Pergunta sobre a nova ordem transitiva entre Y e Z
+                    if random.random() > 0.5:
+                        question = f"Who is {rel['positive']}, {y} or {z}?="
+                        answer = y
+                    else:
+                        question = f"Who is {rel['negative']}, {y} or {z}?="
+                        answer = z
+                    cot_str = f"{y}>{x} {x}>{z} {y}>{z}"
+                else:
+                    # Inverte Y > Z para Z > Y. Ordem final: X > Z > Y.
+                    errata_phrase = f"Wait, {y} is {rel['negative']} than {z}."
+                    context = f"{context} {errata_phrase}"
+                    
+                    # Pergunta sobre a nova ordem transitiva entre X e Z
+                    if random.random() > 0.5:
+                        question = f"Who is {rel['positive']}, {x} or {z}?="
+                        answer = x
+                    else:
+                        question = f"Who is {rel['negative']}, {x} or {z}?="
+                        answer = z
+                    cot_str = f"{x}>{z} {z}>{y} {x}>{y}"
             else:
-                # Pergunta sobre o menor (Z)
-                question = f"Who is {rel['negative']}, {x} or {z}?="
-                answer = z
+                # Sem errata. Ordem clássica: X > Y > Z
+                if random.random() > 0.5:
+                    question = f"Who is {rel['positive']}, {x} or {z}?="
+                    answer = x
+                else:
+                    question = f"Who is {rel['negative']}, {x} or {z}?="
+                    answer = z
+                cot_str = f"{x}>{y} {y}>{z} {x}>{z}"
                 
             input_str = f"{context} {question}"
             target_str = answer
-            
-            # Cadeia de dedução intermediária (CoT)
-            cot_str = f"{x}>{y} {y}>{z} {x}>{z}"
             
             self.samples.append((input_str, target_str, cot_str))
 
@@ -139,16 +170,18 @@ class LogicDataset(Dataset):
 
 if __name__ == "__main__":
     tok = LogicCharTokenizer()
-    ds = LogicDataset(num_samples=3, tokenizer=tok)
+    ds = LogicDataset(num_samples=20, tokenizer=tok, mutable_context=True)
+    print("=== Testando Dataset de Transitividade Mutável ===")
+    count = 0
     for i in range(len(ds)):
         item = ds[i]
-        print(f"Sample {i}:")
-        print("  Raw Input:  ", item["raw_input"])
-        print("  Raw Target: ", item["raw_target"])
-        print("  Raw CoT:    ", item["raw_cot"])
-        print("  Encoded In: ", item["input_ids"])
-        print("  Decoded In: '", tok.decode(item["input_ids"]), "'")
-        print("  Decoded Out:'", tok.decode(item["target_ids"]), "'")
-        print("  Decoded CoT:'", tok.decode(item["cot_ids"]), "'")
-        print("  Mask:       ", item["target_mask"])
-        print("-" * 30)
+        if "Wait," in item["raw_input"]:
+            print(f"Amostra {count+1} (Com Errata/Correção):")
+            print("  Raw Input:  ", item["raw_input"])
+            print("  Raw Target: ", item["raw_target"])
+            print("  Raw CoT:    ", item["raw_cot"])
+            print("  Mask:       ", item["target_mask"])
+            print("-" * 50)
+            count += 1
+            if count >= 3:
+                break
