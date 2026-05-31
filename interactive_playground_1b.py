@@ -42,10 +42,44 @@ def main():
         print("\nEm seguida, execute este script novamente.")
         sys.exit(1)
         
-    adapter_dir = "checkpoints/think_vetor_1b_lora"
+    import argparse
+    parser = argparse.ArgumentParser(description="Playground Interativo Think-Vetor")
+    parser.add_argument("--adapter_dir", type=str, default=None, help="Caminho para a pasta do adaptador LoRA")
+    args = parser.parse_args()
+    
+    adapter_dir = args.adapter_dir
+    if not adapter_dir:
+        # Detectar de forma inteligente adaptadores locais em checkpoints/
+        available_adapters = []
+        checkpoints_root = "checkpoints"
+        if os.path.exists(checkpoints_root):
+            for item in sorted(os.listdir(checkpoints_root)):
+                item_path = os.path.join(checkpoints_root, item)
+                if os.path.isdir(item_path) and os.path.exists(os.path.join(item_path, "adapter_config.json")):
+                    available_adapters.append(item_path)
+                    
+        if len(available_adapters) == 1:
+            adapter_dir = available_adapters[0]
+            print(f"[INFO] Adaptador LoRA detectado e carregado automaticamente: {adapter_dir}")
+        elif len(available_adapters) > 1:
+            print("\nMúltiplos adaptadores LoRA cognitivos detectados:")
+            for idx, path in enumerate(available_adapters):
+                print(f"  [{idx + 1}] {path}")
+            try:
+                choice = input("\nSelecione o número do modelo que deseja carregar > ").strip()
+                choice_idx = int(choice) - 1
+                if 0 <= choice_idx < len(available_adapters):
+                    adapter_dir = available_adapters[choice_idx]
+                else:
+                    adapter_dir = available_adapters[0]
+            except Exception:
+                adapter_dir = available_adapters[0]
+        else:
+            adapter_dir = "checkpoints/think_vetor_1b_lora"
+            
     if not os.path.exists(adapter_dir):
         print(f"[ERRO] Diretório de adaptadores LoRA '{adapter_dir}' não encontrado.")
-        print("Certifique-se de descompactar o arquivo think_vetor_1b_lora.zip na pasta checkpoints.")
+        print("Certifique-se de extrair o zip de adaptadores na pasta checkpoints/.")
         sys.exit(1)
         
     # 1. Carregar metadados do adaptador
@@ -80,17 +114,27 @@ def main():
             trust_remote_code=True
         )
     else:
-        # Carregamento no CPU local em BFloat16 para economizar 50% de RAM e evitar travamentos
+        # Seleção inteligente de dtype no CPU:
+        # - Para 0.5B: Usamos Float32 nativo. Consome apenas ~2.0 GB de RAM e executa a velocidade máxima com vetorização AVX2/CPU!
+        # - Para 1.5B: Mantemos BFloat16 para economizar 50% de RAM e proteger a memória de 12GB do usuário.
+        is_05b = "0.5b" in base_model_id.lower() or "500m" in base_model_id.lower()
+        
+        if is_05b:
+            print("[INFO] Modelo de 0.5B detectado! Forçando Float32 para máxima velocidade nativa no CPU (AVX2/AVX)...")
+            dtype_to_use = torch.float32
+        else:
+            print("[INFO] Modelo maior detectado. Usando BFloat16 para economizar 50% de RAM no CPU...")
+            dtype_to_use = torch.bfloat16
+            
         try:
-            print("[INFO] Carregando pesos no CPU em BFloat16 para economizar 50% de RAM...")
             model = AutoModelForCausalLM.from_pretrained(
                 base_model_id,
-                torch_dtype=torch.bfloat16,
+                torch_dtype=dtype_to_use,
                 device_map=None,
                 trust_remote_code=True
             ).to(device)
         except Exception as e:
-            print(f"[AVISO] Falha ao alocar em BFloat16 ({e}). Usando Float32 padrão (cuidado com consumo de RAM)...")
+            print(f"[AVISO] Falha ao alocar com o dtype selecionado ({e}). Recuando para Float32 padrão...")
             model = AutoModelForCausalLM.from_pretrained(
                 base_model_id,
                 torch_dtype=torch.float32,
