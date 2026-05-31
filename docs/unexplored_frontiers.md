@@ -59,3 +59,8 @@ Agora que resolvemos os pilares fundamentais de modelagem e algoritmos de otimiz
 ### 4. Benchmarking Comparativo de FLOPs e Eficiência com LLMs Clássicos
 * **Objetivo**: Treinar um modelo clássico autoregressivo token por token (Decoder-only mini-GPT) de tamanho equivalente sob o mesmo dataset e comparar a velocidade de treino, consumo computacional (FLOPs) e estabilidade frente a ruídos e contradições de entrada.
 * **Por que investigar**: Prova cientificamente as vantagens de custo e eficiência do Raciocínio Latente Contínuo.
+
+### 5. Linguagem de Programação Cognitiva para Vetores (Think-Vetor DSL / TV-DSL)
+* **Objetivo**: Implementar uma mini-linguagem lógica e matemática formal determinística estruturada dentro das tags de pensamento `<thought>...</thought>` (ex: `[TV-DSL: multiply(432, 78)]`). Durante a inferência, um interpretador de baixo nível intercepta essas instruções estruturadas, realiza a computação analítica exata sem risco de alucinações e reinjeta os resultados determinísticos de volta no contexto vetorial da LLM.
+* **Por que investigar**: Une a capacidade de raciocínio abstrato, orquestração e linguagem natural flexível da LLM com a precisão infalível e livre de erros aritméticos de um processador determinístico clássico. A cadeia de pensamentos latentes/textuais atua essencialmente como uma fita de gravação e execução Turing-completa interativa.
+

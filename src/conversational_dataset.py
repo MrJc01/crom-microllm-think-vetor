@@ -1,6 +1,11 @@
 import random
 import torch
+import os
+import sys
 from torch.utils.data import Dataset
+
+# Configurar caminhos para suportar execução direta
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.hf_tokenizer_wrapper import HFTokenizerWrapper
 from src.logic_dataset import LogicDataset
@@ -71,7 +76,7 @@ class ConversationalDataset(Dataset):
         all_dialogues = dialogues + dialogues_en
         
         # Multiplicar diálogos com ligeiras perturbações lúdicas para atingir a proporção desejada
-        num_chat = int(num_samples * 0.4) # 40% chat
+        num_chat = int(num_samples * 0.35) # 35% chat
         for _ in range(num_chat):
             raw_in, raw_tgt, raw_cot = random.choice(all_dialogues)
             # Adiciona pequenas variações de pontuação ou capitalização
@@ -79,8 +84,8 @@ class ConversationalDataset(Dataset):
                 raw_in = raw_in.upper() if random.random() > 0.8 else raw_in.capitalize()
             self.samples.append((raw_in, raw_tgt, raw_cot))
             
-        # 2. Raciocínio Lógico (30% do dataset)
-        num_logic = int(num_samples * 0.3)
+        # 2. Raciocínio Lógico (25% do dataset)
+        num_logic = int(num_samples * 0.25)
         # Instanciar LogicDataset com o mesmo tokenizer
         logic_ds = LogicDataset(num_samples=num_logic, tokenizer=self.tokenizer, seed=seed+1, mutable_context=True)
         for sample in logic_ds.samples:
@@ -88,11 +93,60 @@ class ConversationalDataset(Dataset):
             self.samples.append((prompt, sample[1], sample[2]))
             
         # 3. Raciocínio Aritmético (30% do dataset)
-        num_arith = num_samples - len(self.samples)
+        num_arith = int(num_samples * 0.30)
         arith_ds = ArithmeticWordDataset(num_samples=num_arith, tokenizer=self.tokenizer, seed=seed+2, difficulty="medium", mutable_context=True)
         for sample in arith_ds.samples:
             prompt = sample[0].strip().rstrip("=")
             self.samples.append((prompt, sample[1], sample[2]))
+            
+        # 4. Exemplos de Computação TV-DSL (10% do dataset para ensinar o modelo a gerar a sintaxe)
+        num_tv_dsl = num_samples - len(self.samples)
+        tv_dsl_ops = ["multiply", "add", "subtract", "divide", "power"]
+        
+        for _ in range(num_tv_dsl):
+            op_name = random.choice(tv_dsl_ops)
+            if op_name == "multiply":
+                a = random.randint(10, 1000)
+                b = random.randint(2, 99)
+                expr = f"multiply({a}, {b})"
+                result = a * b
+                prompt = f"quanto é {a} vezes {b}?" if random.random() > 0.5 else f"calcule {a} * {b}"
+                cot = f"Intenção: Cálculo. Tom: Analítico. Plano: Executar multiplicação determinística de {a} por {b}. [TV-DSL: {expr}]"
+                target = f"O resultado da multiplicação é {result}."
+            elif op_name == "add":
+                a = random.randint(100, 9999)
+                b = random.randint(100, 9999)
+                expr = f"{a} + {b}"
+                result = a + b
+                prompt = f"quanto é {a} mais {b}?" if random.random() > 0.5 else f"calcule {a} + {b}"
+                cot = f"Intenção: Cálculo. Tom: Analítico. Plano: Realizar soma exata de {a} e {b}. [TV-DSL: {expr}]"
+                target = f"O resultado da soma é {result}."
+            elif op_name == "subtract":
+                a = random.randint(100, 9999)
+                b = random.randint(1, a - 1)
+                expr = f"{a} - {b}"
+                result = a - b
+                prompt = f"quanto é {a} menos {b}?" if random.random() > 0.5 else f"subtraia {b} de {a}"
+                cot = f"Intenção: Cálculo. Tom: Analítico. Plano: Subtrair {b} de {a} de forma exata. [TV-DSL: {expr}]"
+                target = f"O resultado da subtração é {result}."
+            elif op_name == "divide":
+                b_val = random.randint(2, 50)
+                res_val = random.randint(5, 500)
+                a_val = b_val * res_val
+                expr = f"divide({a_val}, {b_val})"
+                prompt = f"quanto é {a_val} dividido por {b_val}?" if random.random() > 0.5 else f"calcule {a_val} / {b_val}"
+                cot = f"Intenção: Cálculo. Tom: Analítico. Plano: Executar divisão determinística de {a_val} por {b_val}. [TV-DSL: {expr}]"
+                target = f"O resultado da divisão é {res_val}."
+            else: # power
+                a = random.choice([2, 3, 5, 10])
+                b = random.randint(2, 8 if a > 2 else 12)
+                expr = f"power({a}, {b})"
+                result = a ** b
+                prompt = f"quanto é {a} elevado a {b}?" if random.random() > 0.5 else f"calcule {a} ^ {b}"
+                cot = f"Intenção: Cálculo. Tom: Analítico. Plano: Calcular potência de base {a} e expoente {b}. [TV-DSL: {expr}]"
+                target = f"O resultado é {result}."
+            
+            self.samples.append((prompt, target, cot))
             
         random.shuffle(self.samples)
 
