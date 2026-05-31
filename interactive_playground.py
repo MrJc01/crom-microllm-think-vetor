@@ -13,6 +13,23 @@ from src.coconut_model import CausalThinkVetorModel
 def detect_architecture_and_tokenizer(checkpoint_path):
     print(f"\n[INFO] Carregando e analisando checkpoint: {checkpoint_path}")
     
+    # 0. Verificar se existe config.json no mesmo diretório do checkpoint
+    import json
+    dir_name = os.path.dirname(checkpoint_path)
+    config_path = os.path.join(dir_name, "config.json")
+    
+    config = {}
+    if os.path.exists(config_path):
+        print(f"  [INFO] Arquivo de configuração detectado: {config_path}")
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                config = json.load(f)
+            print("  Parâmetros carregados do config.json:")
+            for k, v in config.items():
+                print(f"    {k}: {v}")
+        except Exception as e:
+            print(f"  [AVISO] Erro ao carregar config.json: {e}. Usando detecção automática heurística.")
+            
     # Carregar state_dict de forma segura
     state_dict = torch.load(checkpoint_path, map_location="cpu")
     
@@ -22,7 +39,8 @@ def detect_architecture_and_tokenizer(checkpoint_path):
     print(f"  d_model detectado: {d_model}")
     
     # 2. Tokenizer apropriado
-    if vocab_size > 50000:
+    tokenizer_type = config.get("tokenizer_type", None)
+    if tokenizer_type == "gpt2" or vocab_size > 50000:
         print("  Tokenizer detectado: HuggingFace GPT-2 (Subwords BPE)")
         tokenizer = HFTokenizerWrapper("gpt2")
     elif vocab_size == 13:
@@ -33,33 +51,44 @@ def detect_architecture_and_tokenizer(checkpoint_path):
         tokenizer = LogicCharTokenizer()
         
     # 3. Ponder Steps e Hopfield EBM
-    max_ponder_steps = 0
-    if 'step_embeddings' in state_dict:
-        max_ponder_steps = state_dict['step_embeddings'].shape[0]
-    print(f"  max_ponder_steps detectado: {max_ponder_steps}")
+    max_ponder_steps = config.get("max_ponder_steps", None)
+    if max_ponder_steps is None:
+        max_ponder_steps = 0
+        if 'step_embeddings' in state_dict:
+            max_ponder_steps = state_dict['step_embeddings'].shape[0]
+    print(f"  max_ponder_steps: {max_ponder_steps}")
     
     # 4. Detectar número de camadas e RoPE
-    use_rope = False
-    num_encoder_layers = 0
-    while True:
-        # Verifica se existe camada no encoder
-        if f"encoder.layers.{num_encoder_layers}.linear1.weight" in state_dict or f"encoder.layers.{num_encoder_layers}.self_attn.in_proj_weight" in state_dict:
-            # Verifica se usa RoPE (CustomTransformerEncoderLayer usa self_attn.q_proj)
-            if f"encoder.layers.{num_encoder_layers}.self_attn.q_proj.weight" in state_dict:
-                use_rope = True
-            num_encoder_layers += 1
-        else:
-            break
-            
-    num_decoder_layers = 0
-    while True:
-        if f"decoder.layers.{num_decoder_layers}.linear1.weight" in state_dict or f"decoder.layers.{num_decoder_layers}.self_attn.in_proj_weight" in state_dict:
-            num_decoder_layers += 1
-        else:
-            break
-            
+    use_rope = config.get("use_rope", None)
+    if use_rope is None:
+        use_rope = False
+        num_encoder_layers = 0
+        while True:
+            # Verifica se existe camada no encoder
+            if f"encoder.layers.{num_encoder_layers}.linear1.weight" in state_dict or f"encoder.layers.{num_encoder_layers}.self_attn.in_proj_weight" in state_dict:
+                # Verifica se usa RoPE (CustomTransformerEncoderLayer usa self_attn.q_proj)
+                if f"encoder.layers.{num_encoder_layers}.self_attn.q_proj.weight" in state_dict:
+                    use_rope = True
+                num_encoder_layers += 1
+            else:
+                break
+    else:
+        num_encoder_layers = config.get("num_encoder_layers", 2)
+        
+    # Detectar número de camadas do decodificador se não especificado
+    num_decoder_layers = config.get("num_decoder_layers", None)
+    if num_decoder_layers is None:
+        num_decoder_layers = 0
+        while True:
+            if f"decoder.layers.{num_decoder_layers}.linear1.weight" in state_dict or f"decoder.layers.{num_decoder_layers}.self_attn.in_proj_weight" in state_dict:
+                num_decoder_layers += 1
+            else:
+                break
+                
     # Se for causal coconut (decoder-only unificado, não tem encoder no state_dict)
-    is_causal_coconut = "causal" in checkpoint_path or "coconut" in checkpoint_path or (num_encoder_layers == 0 and num_decoder_layers > 0)
+    is_causal_coconut = config.get("is_causal_coconut", None)
+    if is_causal_coconut is None:
+        is_causal_coconut = "causal" in checkpoint_path or "coconut" in checkpoint_path or (num_encoder_layers == 0 and num_decoder_layers > 0)
     
     if is_causal_coconut:
         print("  Topologia detectada: Causal Decoder-Only (COCONUT)")
@@ -69,7 +98,7 @@ def detect_architecture_and_tokenizer(checkpoint_path):
             num_layers += 1
         print(f"  Camadas Decodificadoras: {num_layers}")
         
-        nhead = 8 if d_model == 128 else 4
+        nhead = config.get("nhead", 8 if d_model == 128 else 4)
         model = CausalThinkVetorModel(
             vocab_size=vocab_size,
             d_model=d_model,
@@ -83,15 +112,20 @@ def detect_architecture_and_tokenizer(checkpoint_path):
         print(f"  Camadas Encoder: {num_encoder_layers} | Camadas Decoder: {num_decoder_layers}")
         print(f"  Uso de RoPE: {use_rope}")
         
-        nhead = 8 if d_model == 128 else 4
+        # Carregar nhead de forma confiável
+        nhead = config.get("nhead", 8 if d_model == 128 else 4)
+        print(f"  nhead: {nhead}")
         
         # Obter o número real de memórias Hopfield a partir do state_dict para evitar incompatibilidade
         if 'hopfield_ebm.memories' in state_dict:
             num_memories = state_dict['hopfield_ebm.memories'].shape[0]
             print(f"  Número de memórias Hopfield detectado: {num_memories}")
         else:
-            num_memories = 512 if d_model == 128 else 128
+            num_memories = config.get("num_memories", 512 if d_model == 128 else 128)
             
+        beta = config.get("beta", 8.0)
+        use_pos_embedding = config.get("use_pos_embedding", not use_rope)
+        
         model = ThinkVetorModel(
             vocab_size=vocab_size,
             d_model=d_model,
@@ -100,8 +134,8 @@ def detect_architecture_and_tokenizer(checkpoint_path):
             num_decoder_layers=num_decoder_layers if num_decoder_layers > 0 else 2,
             max_ponder_steps=max_ponder_steps,
             num_memories=num_memories,
-            beta=8.0,
-            use_pos_embedding=not use_rope,
+            beta=beta,
+            use_pos_embedding=use_pos_embedding,
             use_rope=use_rope
         )
         
@@ -168,14 +202,25 @@ def run_inference(model, tokenizer, prompt, is_causal_coconut, device):
             current_state = x_encoded
             halting_probs = []
             
-            init_temp = 0.5
+            init_temp = 0.0 # Langevin temperature em inferência pura
             for k in range(model.max_ponder_steps):
-                step_emb = model.step_embeddings[k].view(1, 1, d_model)
+                step_idx = min(k, model.step_embeddings.shape[0] - 1) if hasattr(model, 'step_embeddings') else 0
+                step_emb = model.step_embeddings[step_idx].view(1, 1, d_model) if hasattr(model, 'step_embeddings') else torch.zeros(1, 1, d_model, device=device)
                 state_temp = current_state + step_emb
                 
-                next_state = model.recurrent_layer(state_temp)
-                current_temp = init_temp * (0.6 ** k)
-                next_state = model.hopfield_ebm(next_state, temp=current_temp, lr=0.1)
+                # Resfriamento térmico de atenção linear na inferência
+                if model.max_ponder_steps > 1:
+                    attn_temp = 2.0 - k * (2.0 - 0.2) / (model.max_ponder_steps - 1)
+                else:
+                    attn_temp = 1.0
+                attn_temp = max(attn_temp, 0.2)
+                
+                if model.use_rope:
+                    next_state = model.recurrent_layer(state_temp, temp=attn_temp, rope=model.rope)
+                else:
+                    next_state = model.recurrent_layer(state_temp, temp=attn_temp)
+                    
+                next_state = model.hopfield_ebm(next_state, temp=init_temp, lr=0.1)
                 
                 halt_prob = torch.sigmoid(model.halt_classifier(next_state))
                 
@@ -211,8 +256,15 @@ def run_inference(model, tokenizer, prompt, is_causal_coconut, device):
                 if model.use_pos_embedding:
                     tgt_emb = model.pos_decoder(tgt_emb)
                     
-                # O decodificador atende aos estados latentes ponderados
-                x_decoded = model.decoder(tgt_emb, pooled_latent_states)
+                tgt_seq_len = tgt_tensor.shape[1]
+                causal_mask = nn.Transformer.generate_square_subsequent_mask(tgt_seq_len, device=device)
+                
+                # O decodificador atende aos estados latentes ponderados com máscara causal e RoPE se necessário
+                if model.use_rope:
+                    x_decoded = model.decoder(tgt_emb, pooled_latent_states, tgt_mask=causal_mask, rope=model.rope)
+                else:
+                    x_decoded = model.decoder(tgt_emb, pooled_latent_states, tgt_mask=causal_mask)
+                    
                 logits = model.lm_head(x_decoded[:, -1, :])
                 
                 next_token = torch.argmax(logits, dim=-1).item()
@@ -235,13 +287,19 @@ def main():
     print("       PLAYGROUND INTERATIVO DO MODELO THINK-VETOR      ")
     print("="*60)
     
-    # 1. Localizar checkpoints
+    # 1. Localizar checkpoints recursivamente
     checkpoint_dir = "checkpoints"
     if not os.path.exists(checkpoint_dir):
         print(f"[ERRO] Pasta '{checkpoint_dir}' não encontrada. Certifique-se de executar na raiz do repositório.")
         sys.exit(1)
         
-    checkpoints = [f for f in os.listdir(checkpoint_dir) if f.endswith(".pt")]
+    checkpoints = []
+    for root, dirs, files in os.walk(checkpoint_dir):
+        for file in files:
+            if file.endswith(".pt"):
+                rel_path = os.path.relpath(os.path.join(root, file), checkpoint_dir)
+                checkpoints.append(rel_path)
+                
     if not checkpoints:
         print(f"[ERRO] Nenhum arquivo de peso '.pt' encontrado na pasta '{checkpoint_dir}'.")
         sys.exit(1)
