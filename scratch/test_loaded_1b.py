@@ -2,8 +2,15 @@ import sys
 import os
 import torch
 import time
+import multiprocessing
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# Otimização crucial de CPU local
+logical_cores = multiprocessing.cpu_count()
+physical_cores = max(1, logical_cores // 2)
+torch.set_num_threads(physical_cores)
+print(f"[INFO] Otimização de CPU: usando {physical_cores} threads físicas.")
 
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from peft import PeftModel
