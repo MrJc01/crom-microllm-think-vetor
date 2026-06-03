@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Think-Vetor Chat - Painel de Análise Cognitiva</title>
+    <!-- Google Fonts: Outfit (headings), Plus Jakarta Sans (body), Fira Code (monospaced logs/thoughts) -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500&family=Outfit:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/css/style.css">
+    <!-- FontAwesome icons via CDN -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body>
+    <div class="app-container">
+        
+        <!-- SIDEBAR ESQUERDA: CONFIGURAÇÕES -->
+        <aside class="sidebar-left">
+            <div class="sidebar-header">
+                <div class="logo">
+                    <i class="fa-solid fa-brain-circuit logo-icon"></i>
+                    <span>Think-Vetor</span>
+                </div>
+            </div>
+            
+            <div class="sidebar-content">
+                <!-- Seletor de Modelo -->
+                <div class="config-group">
+                    <label class="config-label">
+                        <i class="fa-solid fa-microchip"></i> Modelo Ativo
+                    </label>
+                    <select id="model-select" class="custom-select">
+                        <option value="">Carregando modelos...</option>
+                    </select>
+                    <div id="model-status" class="model-status-card">
+                        <span class="status-indicator online"></span>
+                        <span id="model-status-text">Modelo pronto</span>
+                    </div>
+                </div>
+
+                <hr class="divider">
+
+                <!-- Parâmetros de Inferência -->
+                <div class="config-group">
+                    <label class="config-label">Parâmetros de Geração</label>
+                    
+                    <div class="parameter">
+                        <div class="param-header">
+                            <span>Temperatura</span>
+                            <span id="temp-val">0.3</span>
+                        </div>
+                        <input type="range" id="param-temp" min="0.0" max="1.2" step="0.1" value="0.3" class="custom-range">
+                    </div>
+
+                    <div class="parameter">
+                        <div class="param-header">
+                            <span>Max Tokens</span>
+                            <span id="max-tokens-val">256</span>
+                        </div>
+                        <input type="range" id="param-max-tokens" min="64" max="1024" step="64" value="256" class="custom-range">
+                    </div>
+
+                    <div class="parameter toggle-param">
+                        <div class="param-info">
+                            <span>Coprocessador TV-DSL</span>
+                            <small>Resolução determinística AST</small>
+                        </div>
+                        <label class="switch">
+                            <input type="checkbox" id="param-tv-dsl" checked>
+                            <span class="slider round"></span>
+                        </label>
+                    </div>
+                </div>
+
+                <hr class="divider">
+
+                <!-- Recursos do Sistema -->
+                <div class="config-group system-monitor">
+                    <label class="config-label">
+                        <i class="fa-solid fa-server"></i> Servidor Local
+                    </label>
+                    <div class="sys-stat">
+                        <div class="sys-stat-info">
+                            <span>CPU (threads)</span>
+                            <span id="cpu-stat">0%</span>
+                        </div>
+                        <div class="progress-bar-container">
+                            <div id="cpu-progress" class="progress-bar" style="width: 0%"></div>
+                        </div>
+                    </div>
+                    <div class="sys-stat">
+                        <div class="sys-stat-info">
+                            <span>RAM</span>
+                            <span id="ram-stat">0%</span>
+                        </div>
+                        <div class="progress-bar-container">
+                            <div id="ram-progress" class="progress-bar" style="width: 0%"></div>
+                        </div>
+                    </div>
+                    <div class="device-tag">
+                        <i class="fa-solid fa-gauge-high"></i> Dispositivo: <span id="device-type">CPU</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="sidebar-footer">
+                <button id="btn-clear-chat" class="btn btn-secondary btn-block">
+                    <i class="fa-solid fa-trash-can"></i> Limpar Conversa
+                </button>
+            </div>
+        </aside>
+
+        <!-- ÁREA CENTRAL: CHAT ESTILO GEMINI -->
+        <main class="chat-workspace">
+            <header class="chat-header">
+                <div class="chat-title">
+                    <h1>Espaço Latente de Conversa</h1>
+                    <p id="sub-status">Inference Environment</p>
+                </div>
+                <button id="toggle-right-sidebar" class="btn btn-icon" title="Ocultar diagnósticos">
+                    <i class="fa-solid fa-chart-column"></i>
+                </button>
+            </header>
+
+            <!-- Histórico de Mensagens -->
+            <div class="chat-history" id="chat-history">
+                
+                <!-- Boas-vindas (Gemini Style) -->
+                <div class="welcome-container" id="welcome-container">
+                    <div class="welcome-heading">
+                        <h2>Olá. Eu sou o <span class="gradient-text">Think-Vetor</span></h2>
+                        <p>Como posso ajudar você a refletir ou calcular hoje?</p>
+                    </div>
+                    
+                    <div class="suggestions-grid">
+                        <div class="suggestion-card" data-prompt="Alice é mais alta que Bob. Bob é mais alto que Charlie. Quem é mais alto, Alice ou Charlie?">
+                            <i class="fa-solid fa-circle-question card-icon"></i>
+                            <p>Quem é mais alto: Alice, Bob ou Charlie? (Relacional)</p>
+                        </div>
+                        <div class="suggestion-card" data-prompt="Se John ganha $12 por hora e trabalhou 5 horas ontem, quanto ele ganhou?">
+                            <i class="fa-solid fa-calculator card-icon"></i>
+                            <p>Problema matemático de John ($12/h) (TV-DSL)</p>
+                        </div>
+                        <div class="suggestion-card" data-prompt="A bakery sells 10 loaves of bread for 2 dollars each, and 15 baguettes for 3 dollars each. How much money did the baker make in total?">
+                            <i class="fa-solid fa-plus-minus card-icon"></i>
+                            <p>Resolver receita de padaria com AST de equações</p>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+
+            <!-- Área do Input de Texto (Prompt) -->
+            <footer class="chat-input-area">
+                <div class="input-container">
+                    <textarea id="prompt-input" placeholder="Pergunte ao Think-Vetor..." rows="1"></textarea>
+                    <div class="input-controls">
+                        <button id="btn-stop" class="btn-stop hidden" title="Parar geração">
+                            <i class="fa-solid fa-stop"></i>
+                        </button>
+                        <button id="btn-send" class="btn-send" title="Enviar pergunta">
+                            <i class="fa-solid fa-paper-plane"></i>
+                        </button>
+                    </div>
+                </div>
+                <div class="input-footer-text">
+                    O modelo processa cadeias de raciocínio contínuas e pode utilizar um coprocessador TV-DSL para aritmética exata.
+                </div>
+            </footer>
+        </main>
+
+        <!-- SIDEBAR DIREITA: DIAGNÓSTICO E MÉTRICAS -->
+        <aside class="sidebar-right" id="sidebar-right">
+            <div class="sidebar-header">
+                <h3><i class="fa-solid fa-square-poll-vertical"></i> Diagnóstico em Tempo Real</h3>
+            </div>
+            
+            <div class="sidebar-content">
+                <!-- Métricas de Latência -->
+                <div class="metric-card">
+                    <div class="metric-title">Performance da Inferência</div>
+                    <div class="metrics-grid">
+                        <div class="metric-sub-card">
+                            <div class="label">TTFT</div>
+                            <div class="val" id="val-ttft">-</div>
+                            <div class="unit">ms</div>
+                        </div>
+                        <div class="metric-sub-card">
+                            <div class="label">Latência Total</div>
+                            <div class="val" id="val-latency">-</div>
+                            <div class="unit">ms</div>
+                        </div>
+                        <div class="metric-sub-card select-all">
+                            <div class="label">Velocidade</div>
+                            <div class="val text-primary" id="val-speed">-</div>
+                            <div class="unit">tok/s</div>
+                        </div>
+                        <div class="metric-sub-card">
+                            <div class="label">Tokens Totais</div>
+                            <div class="val" id="val-tokens">-</div>
+                            <div class="unit">tokens</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Painel da TV-DSL AST -->
+                <div class="metric-card">
+                    <div class="metric-title flex-header">
+                        <span>Coprocessamento TV-DSL</span>
+                        <span id="dsl-badge" class="badge badge-none">Nenhum</span>
+                    </div>
+                    <div class="dsl-logs-container">
+                        <div class="dsl-logs-title">Histórico do Coprocessador AST:</div>
+                        <pre id="dsl-console" class="monospace-logs">Aguardando chamada de equações no raciocínio...</pre>
+                    </div>
+                </div>
+
+                <!-- Entropia das Attention Heads -->
+                <div class="metric-card">
+                    <div class="metric-title flex-header">
+                        <span>Entropia das Cabeças de Atenção</span>
+                        <span class="info-tooltip" title="A entropia deve cair conforme o modelo foca no atrator lógico.">
+                            <i class="fa-solid fa-circle-info"></i>
+                        </span>
+                    </div>
+                    
+                    <div class="entropy-viz-container">
+                        <div class="entropy-average-header">
+                            <span>Média de Resfriamento:</span>
+                            <span id="entropy-avg-val">-</span>
+                        </div>
+                        
+                        <!-- Grid visual das 8 cabeças de atenção -->
+                        <div class="entropy-grid" id="entropy-grid">
+                            <!-- Injetado dinamicamente via JS -->
+                            <div class="entropy-bar-wrapper">
+                                <div class="entropy-bar-label">H1</div>
+                                <div class="entropy-bar-track">
+                                    <div class="entropy-bar-fill" style="height: 0%"></div>
+                                </div>
+                                <div class="entropy-bar-value">0.0</div>
+                            </div>
+                            <div class="entropy-bar-wrapper">
+                                <div class="entropy-bar-label">H2</div>
+                                <div class="entropy-bar-track">
+                                    <div class="entropy-bar-fill" style="height: 0%"></div>
+                                </div>
+                                <div class="entropy-bar-value">0.0</div>
+                            </div>
+                            <div class="entropy-bar-wrapper">
+                                <div class="entropy-bar-label">H3</div>
+                                <div class="entropy-bar-track">
+                                    <div class="entropy-bar-fill" style="height: 0%"></div>
+                                </div>
+                                <div class="entropy-bar-value">0.0</div>
+                            </div>
+                            <div class="entropy-bar-wrapper">
+                                <div class="entropy-bar-label">H4</div>
+                                <div class="entropy-bar-track">
+                                    <div class="entropy-bar-fill" style="height: 0%"></div>
+                                </div>
+                                <div class="entropy-bar-value">0.0</div>
+                            </div>
+                            <div class="entropy-bar-wrapper">
+                                <div class="entropy-bar-label">H5</div>
+                                <div class="entropy-bar-track">
+                                    <div class="entropy-bar-fill" style="height: 0%"></div>
+                                </div>
+                                <div class="entropy-bar-value">0.0</div>
+                            </div>
+                            <div class="entropy-bar-wrapper">
+                                <div class="entropy-bar-label">H6</div>
+                                <div class="entropy-bar-track">
+                                    <div class="entropy-bar-fill" style="height: 0%"></div>
+                                </div>
+                                <div class="entropy-bar-value">0.0</div>
+                            </div>
+                            <div class="entropy-bar-wrapper">
+                                <div class="entropy-bar-label">H7</div>
+                                <div class="entropy-bar-track">
+                                    <div class="entropy-bar-fill" style="height: 0%"></div>
+                                </div>
+                                <div class="entropy-bar-value">0.0</div>
+                            </div>
+                            <div class="entropy-bar-wrapper">
+                                <div class="entropy-bar-label">H8</div>
+                                <div class="entropy-bar-track">
+                                    <div class="entropy-bar-fill" style="height: 0%"></div>
+                                </div>
+                                <div class="entropy-bar-value">0.0</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Gráfico em Tempo Real de Recursos -->
+                <div class="metric-card">
+                    <div class="metric-title">Histórico de Uso de Recursos</div>
+                    <canvas id="resources-chart" class="resources-chart"></canvas>
+                </div>
+            </div>
+        </aside>
+
+    </div>
+
+    <!-- Script de inicialização da interface -->
+    <script src="/static/js/app.js"></script>
+</body>
+</html>

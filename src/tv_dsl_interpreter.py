@@ -21,6 +21,8 @@ class TVDSLInterpreter:
     }
 
     def __init__(self):
+        self.variables = {}
+        self.history = []
         # Mapeamento de funções funcionais suportadas de forma explícita
         self.functions = {
             "add": lambda a, b: a + b,
@@ -33,8 +35,34 @@ class TVDSLInterpreter:
             "pow": lambda a, b: a ** b,
             "power": lambda a, b: a ** b,
             "sqrt": lambda a: math.sqrt(a) if a >= 0 else "Error: Square root of negative number",
-            "abs": lambda a: abs(a)
+            "abs": lambda a: abs(a),
+            "set": lambda name, val: self.set_variable(name, val),
+            "get": lambda name: self.get_variable(name),
+            "clear_vars": lambda: self.clear_variables(),
+            "recall": lambda query: self.recall_context(query)
         }
+
+    def set_variable(self, name, value):
+        self.variables[str(name)] = value
+        return f"Stored {name} = {value}"
+        
+    def get_variable(self, name):
+        name_str = str(name)
+        if name_str in self.variables:
+            return self.variables[name_str]
+        return f"Error: Variable '{name_str}' is not defined"
+        
+    def clear_variables(self):
+        self.variables.clear()
+        return "Variables cleared"
+        
+    def recall_context(self, query):
+        query_lower = str(query).lower()
+        for turn in reversed(self.history):
+            content = turn.get("content", "")
+            if query_lower in content.lower():
+                return content
+        return "No matching context found"
 
     def safe_eval(self, expr_str: str):
         """
@@ -58,12 +86,21 @@ class TVDSLInterpreter:
         elif isinstance(node, ast.Constant): # Python >= 3.8
             return node.value
             
+        # Resolução de variáveis (ex: 'x' em 'x + 5')
+        elif isinstance(node, ast.Name):
+            var_name = node.id
+            if var_name in self.variables:
+                return self.variables[var_name]
+            return f"Error: Variable '{var_name}' is not defined"
+            
         # Operações binárias (+, -, *, /, **)
         elif isinstance(node, ast.BinOp):
             left = self._eval_node(node.left)
             right = self._eval_node(node.right)
-            if isinstance(left, str) or isinstance(right, str):
-                return "Error: Invalid operand in binary operation"
+            if isinstance(left, str) and left.startswith("Error"):
+                return left
+            if isinstance(right, str) and right.startswith("Error"):
+                return right
             op_type = type(node.op)
             if op_type in self.SAFE_OPERATORS:
                 try:
@@ -77,17 +114,37 @@ class TVDSLInterpreter:
         # Operações unárias (ex: sinal de menos unário '-5')
         elif isinstance(node, ast.UnaryOp):
             operand = self._eval_node(node.operand)
-            if isinstance(operand, str):
+            if isinstance(operand, str) and operand.startswith("Error"):
                 return operand
             op_type = type(node.op)
             if op_type in self.SAFE_OPERATORS:
                 return self.SAFE_OPERATORS[op_type](operand)
             return f"Error: Unsupported unary operator '{op_type.__name__}'"
             
-        # Chamadas de funções explícitas (ex: multiply(432, 78) ou sqrt(16))
+        # Chamadas de funções explícitas (ex: multiply(432, 78) ou set(x, 10))
         elif isinstance(node, ast.Call):
             func_name = node.func.id if isinstance(node.func, ast.Name) else None
             if func_name in self.functions:
+                # Interceptação especial para set(x, valor) para não tentar avaliar 'x' como variável inexistente
+                if func_name == "set" and len(node.args) == 2:
+                    name_node = node.args[0]
+                    var_name = name_node.id if isinstance(name_node, ast.Name) else self._eval_node(name_node)
+                    val = self._eval_node(node.args[1])
+                    if isinstance(var_name, str) and var_name.startswith("Error"):
+                        return var_name
+                    if isinstance(val, str) and val.startswith("Error"):
+                        return val
+                    return self.set_variable(var_name, val)
+                
+                # Interceptação especial para get(x)
+                elif func_name == "get" and len(node.args) == 1:
+                    name_node = node.args[0]
+                    var_name = name_node.id if isinstance(name_node, ast.Name) else self._eval_node(name_node)
+                    if isinstance(var_name, str) and var_name.startswith("Error"):
+                        return var_name
+                    return self.get_variable(var_name)
+                
+                # Avaliação padrão de argumentos
                 args = [self._eval_node(arg) for arg in node.args]
                 for arg in args:
                     if isinstance(arg, str) and arg.startswith("Error"):

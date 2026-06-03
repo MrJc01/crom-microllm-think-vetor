@@ -51,6 +51,9 @@ Acompanha quais caminhos conceituais originais do blueprint (como RoPE, Causal C
 ### 6. [Próximos Passos e Plano de Pesquisa V2](file:///home/j/%C3%81rea%20de%20trabalho/GitHub/crom-microllm-think-vetor/docs/proximos_passos_e_plano_de_pesquisa.md)
 Descreve o plano de execução e o checklist detalhado para a avaliação de generalização OOD extrema, transitividade multidimensional, benchmarking comparativo de inteligência com LLMs clássicos e a disponibilização de playgrounds interativos.
 
+### 7. [Coprocessador TV-DSL Stateful e Treinamento em Nuvem](file:///home/j/Documentos/GitHub/crom-microllm-think-vetor/docs/tv_dsl_and_cloud_training.md)
+Documenta a especificação técnica do Coprocessador TV-DSL com suporte a estado conversacional (variáveis) e recuperação dinâmica de contexto (`recall`), bem como o setup e tempo de treinamento do modelo 1.5B (SFT + GRPO-RL) na nuvem.
+
 ---
 
 ## 🏆 Conquistas Experimentais Empíricas

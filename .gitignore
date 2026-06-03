@@ -19,3 +19,7 @@ checkpoints/
 # OS-specific
 .DS_Store
 Thumbs.db
+
+# Credentials & custom scripts
+.env
+vast

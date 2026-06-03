@@ -19,16 +19,18 @@ class LinearProbe(nn.Module):
         return self.linear(x)
 
 def extract_probe_targets(extra_info):
-    # Sort names alphabetically to get a stable set of entities
     names_sorted = sorted(extra_info["rel1_order"])
     
-    # Target 1: Is names_sorted[0] > names_sorted[2] for Attribute 1?
+    # Target 1: Is names_sorted[0] > names_sorted[-1] for Attribute 1?
     order1 = extra_info["rel1_order"]
-    label1 = 1.0 if order1.index(names_sorted[0]) < order1.index(names_sorted[2]) else 0.0
+    label1 = 1.0 if order1.index(names_sorted[0]) < order1.index(names_sorted[-1]) else 0.0
     
-    # Target 2: Is names_sorted[0] > names_sorted[2] for Attribute 2?
-    order2 = extra_info["rel2_order"]
-    label2 = 1.0 if order2.index(names_sorted[0]) < order2.index(names_sorted[2]) else 0.0
+    # Target 2: Is names_sorted[0] > names_sorted[-1] for Attribute 2?
+    order2 = extra_info.get("rel2_order")
+    if order2 is not None:
+        label2 = 1.0 if order2.index(names_sorted[0]) < order2.index(names_sorted[-1]) else 0.0
+    else:
+        label2 = 0.0
     
     return label1, label2
 
@@ -109,11 +111,13 @@ def main():
     parser.add_argument("--num_samples", type=int, default=200, help="Quantidade de amostras para avaliação de acurácia.")
     parser.add_argument("--probe_samples", type=int, default=500, help="Quantidade de amostras para o treinamento dos Probes.")
     parser.add_argument("--tokenizer_name", type=str, default="char", help="Tokenizer ('char' ou HuggingFace path).")
+    parser.add_argument("--num_entities", type=int, default=3, help="Número de entidades no dataset lógico (3 a 6).")
     args = parser.parse_args()
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"=== AVALIAÇÃO CIENTÍFICA: TRANSITIVIDADE MULTIDIMENSIONAL ===")
     print(f"Dispositivo de avaliação: {device.type.upper()}")
+    print(f"Número de entidades: {args.num_entities}")
     
     if args.tokenizer_name == "char":
         tokenizer = LogicCharTokenizer()
@@ -153,7 +157,7 @@ def main():
         
     # 2. Avaliação de Acurácia Exact Match (OOD Multidimensional)
     print("\n--- 1. Avaliando Acurácia Exata no Dataset Multidimensional ---")
-    val_ds = LogicDataset(num_samples=args.num_samples, seed=888, tokenizer=tokenizer, multidimensional=True, mutable_context=False)
+    val_ds = LogicDataset(num_samples=args.num_samples, seed=888, tokenizer=tokenizer, multidimensional=(args.num_entities==3), num_entities=args.num_entities, mutable_context=False)
     
     model.eval()
     correct = 0
@@ -174,7 +178,7 @@ def main():
     
     # 3. Treinamento de Probes Lineares (Desacoplamento de Embeddings)
     print("\n--- 2. Treinando Probes Lineares no Espaço de Embeddings ---")
-    probe_ds = LogicDataset(num_samples=args.probe_samples, seed=999, tokenizer=tokenizer, multidimensional=True, mutable_context=False)
+    probe_ds = LogicDataset(num_samples=args.probe_samples, seed=999, tokenizer=tokenizer, multidimensional=(args.num_entities==3), num_entities=args.num_entities, mutable_context=False)
     
     embeddings = []
     labels1 = []
@@ -209,19 +213,22 @@ def main():
     print(f"Dataset de Probe: {len(X)} amostras total (Treino: {len(X_train)} | Validação: {len(X_val)})")
     
     probe1, acc1 = train_probe(X_train, y1_train, X_val, y1_val, input_dim=128)
-    probe2, acc2 = train_probe(X_train, y2_train, X_val, y2_val, input_dim=128)
-    
     print(f"Acurácia do Probe 1 (Atributo 1 - Relação Lógica 1): {acc1 * 100:.2f}%")
-    print(f"Acurácia do Probe 2 (Atributo 2 - Relação Lógica 2): {acc2 * 100:.2f}%")
     
-    # Calcular cosseno e ortogonalidade
-    w1 = probe1.linear.weight.data.squeeze()
-    w2 = probe2.linear.weight.data.squeeze()
-    cos_sim = torch.cosine_similarity(w1, w2, dim=0).item()
-    angle = np.arccos(np.clip(cos_sim, -1.0, 1.0)) * 180 / np.pi
-    
-    print(f"Similaridade de Cosseno entre os Pesos dos Probes: {cos_sim:.4f}")
-    print(f"Ângulo de Ortogonalidade dos Probes: {angle:.2f}°")
+    if args.num_entities == 3:
+        probe2, acc2 = train_probe(X_train, y2_train, X_val, y2_val, input_dim=128)
+        print(f"Acurácia do Probe 2 (Atributo 2 - Relação Lógica 2): {acc2 * 100:.2f}%")
+        
+        # Calcular cosseno e ortogonalidade
+        w1 = probe1.linear.weight.data.squeeze()
+        w2 = probe2.linear.weight.data.squeeze()
+        cos_sim = torch.cosine_similarity(w1, w2, dim=0).item()
+        angle = np.arccos(np.clip(cos_sim, -1.0, 1.0)) * 180 / np.pi
+        
+        print(f"Similaridade de Cosseno entre os Pesos dos Probes: {cos_sim:.4f}")
+        print(f"Ângulo de Ortogonalidade dos Probes: {angle:.2f}°")
+    else:
+        print("[INFO] Ignorando Probe 2 / Ortogonalidade pois o dataset de num_entities > 3 é unidimensional.")
     
     # 4. Mapeamento de Entropia de Atenção
     print("\n--- 3. Mapeamento da Entropia de Atenção ao Longo da Reflexão ---")

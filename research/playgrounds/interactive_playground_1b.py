@@ -84,9 +84,20 @@ def main():
         
     # 1. Carregar metadados do adaptador
     import json
-    config_path = os.path.join(adapter_dir, "think_vetor_config.json")
     base_model_id = "Qwen/Qwen2.5-1.5B-Instruct" # Fallback padrão
     
+    # Priorizar a detecção a partir do adapter_config.json padrão do PEFT
+    adapter_config_path = os.path.join(adapter_dir, "adapter_config.json")
+    if os.path.exists(adapter_config_path):
+        try:
+            with open(adapter_config_path, "r", encoding="utf-8") as f:
+                peft_config = json.load(f)
+            base_model_id = peft_config.get("base_model_name_or_path", base_model_id)
+        except Exception as e:
+            print(f"[AVISO] Erro ao carregar adapter_config.json: {e}")
+
+    # Fallback para custom config
+    config_path = os.path.join(adapter_dir, "think_vetor_config.json")
     if os.path.exists(config_path):
         try:
             with open(config_path, "r", encoding="utf-8") as f:
