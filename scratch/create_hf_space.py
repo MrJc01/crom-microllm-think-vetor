@@ -147,11 +147,11 @@ class TVDSLInterpreter:
 # 2. CARREGAMENTO E CONFIGURAÇÃO DO MODELO
 # ============================================================
 print("[INFO] Carregando pesos do modelo e adaptadores da CromIA no Space...")
-base_model_id = "Qwen/Qwen2.5-0.5B-Instruct"
-adapter_id = "CromIA/think-vetor-0.5b-lora"
+base_model_id = "Qwen/Qwen2.5-1.5B-Instruct"
+adapter_id = "CromIA/think-vetor-1b-hybrid-lora"
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-dtype = torch.float32
+dtype = torch.bfloat16
 
 tokenizer = AutoTokenizer.from_pretrained(adapter_id, trust_remote_code=True)
 model = AutoModelForCausalLM.from_pretrained(
@@ -404,7 +404,7 @@ with gr.Blocks(title="Think-Vetor Chat - CromIA") as demo:
         \"\"\"
         <div style="text-align: center; margin-bottom: 25px; margin-top: 15px;">
             <h1 style="font-size: 2.2em; font-weight: bold; background: linear-gradient(90deg, #10b981, #06b6d4); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">
-                🧠 Think-Vetor 0.5B: Playground Cognitivo
+                🧠 Think-Vetor 1.5B: Playground Cognitivo
             </h1>
             <p style="color: #94a3b8; font-size: 1.1em; margin-top: 5px;">
                 Fusão de Raciocínio Contínuo e Computação Determinística de Altíssima Fidelidade (TV-DSL)
@@ -414,7 +414,7 @@ with gr.Blocks(title="Think-Vetor Chat - CromIA") as demo:
                     Organization: CromIA
                 </span>
                 <span style="background: rgba(6, 182, 212, 0.1); color: #06b6d4; padding: 4px 10px; border-radius: 20px; font-size: 0.85em; border: 1px solid rgba(6, 182, 212, 0.2);">
-                    Model Scale: 0.5B LoRA
+                    Model Scale: 1.5B LoRA
                 </span>
             </div>
         </div>
